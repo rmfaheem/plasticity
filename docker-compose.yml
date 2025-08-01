@@ -1,0 +1,108 @@
+version: '3.8'
+
+services:
+  # Health check helper container
+  healthcheck:
+    image: curlimages/curl:latest
+    container_name: healthcheck
+    command: ["tail", "-f", "/dev/null"]
+    restart: unless-stopped
+    networks:
+      - semantic_network
+
+  # Qdrant Vector Database
+  qdrant:
+    image: qdrant/qdrant:v1.7.4
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    restart: unless-stopped
+    networks:
+      - semantic_network
+
+
+  # ArangoDB Graph Database
+  arangodb:
+    image: arangodb:3.11.5
+    container_name: arangodb
+    ports:
+      - "8529:8529"
+    volumes:
+      - arango_data:/var/lib/arangodb3
+      - arango_apps_data:/var/lib/arangodb3-apps
+    environment:
+      - ARANGO_ROOT_PASSWORD=password
+      - ARANGO_NO_AUTH=0
+    restart: unless-stopped
+    networks:
+      - semantic_network
+
+
+  # Semantic Search Application
+  semantic-search:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: semantic-search
+    depends_on:
+      - qdrant
+      - arangodb
+    volumes:
+      - ./config:/app/config:ro
+      - ./examples:/app/examples:ro
+      - semantic_logs:/app/logs
+    ports:
+      - "8080:8080"
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - ARANGO_HOST=arangodb
+      - ARANGO_PORT=8529
+      - ARANGO_ROOT_PASSWORD=password
+    restart: unless-stopped
+    command: ["server"]
+    networks:
+      - semantic_network
+
+  # Optional: Setup service to initialize databases
+  setup:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: semantic-setup
+    depends_on:
+      - qdrant
+      - arangodb
+    volumes:
+      - ./config:/app/config:ro
+      - ./setup:/app/setup:ro
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - ARANGO_HOST=arangodb
+      - ARANGO_PORT=8529
+      - ARANGO_ROOT_PASSWORD=password
+    restart: "no"
+    command: ["sh", "/app/setup/init-databases.sh"]
+    networks:
+      - semantic_network
+
+volumes:
+  qdrant_data:
+    driver: local
+  arango_data:
+    driver: local
+  arango_apps_data:
+    driver: local
+  semantic_logs:
+    driver: local
+
+networks:
+  semantic_network:
+    driver: bridge

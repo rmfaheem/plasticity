@@ -1,0 +1,40 @@
+# Zig build artifacts
+zig-out/
+zig-cache/
+.zig-cache/
+
+# Development files
+*.log
+*.tmp
+.env
+.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Docker
+.dockerignore
+Dockerfile.dev
+
+# Documentation (we'll copy README separately if needed)
+*.md
+!README.md
+
+# Large example files
+examples/*.large
+
+# Logs
+logs/
+*.log

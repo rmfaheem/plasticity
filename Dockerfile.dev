@@ -1,0 +1,30 @@
+# Development Dockerfile with hot reload capabilities
+FROM alpine:latest
+
+# Install dependencies for building and development
+RUN apk add --no-cache \
+    zig \
+    libc-dev \
+    bash \
+    git \
+    inotify-tools
+
+# Create non-root user for development
+RUN addgroup -g 1001 -S semantic && \
+    adduser -S semantic -u 1001 -G semantic
+
+# Create directories
+RUN mkdir -p /app/src /app/config /app/examples /app/logs /app/zig-out && \
+    chown -R semantic:semantic /app
+
+# Switch to non-root user
+USER semantic
+
+# Set working directory
+WORKDIR /app
+
+# Copy build configuration
+COPY --chown=semantic:semantic build.zig build.zig.zon ./
+
+# Default command for development (can be overridden)
+CMD ["/bin/bash"]

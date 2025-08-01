@@ -1,0 +1,21 @@
+{
+  "qdrant": {
+    "host": "qdrant",
+    "port": 6333,
+    "collection_name": "semantic_chunks",
+    "api_key": null
+  },
+  "arango": {
+    "host": "arangodb",
+    "port": 8529,
+    "database": "semantic_graph",
+    "username": "root",
+    "password": "password"
+  },
+  "ranking": {
+    "similarity_weight": 0.5,
+    "recency_weight": 0.3,
+    "graph_weight": 0.2,
+    "recency_decay_factor": 0.1
+  }
+}

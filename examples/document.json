@@ -1,0 +1,8 @@
+{
+  "id": "doc_001",
+  "vector": [0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75, 0.85],
+  "timestamp": 1722516000,
+  "content": "This is a sample document about machine learning algorithms.",
+  "topic_id": "machine_learning",
+  "related_documents": ["doc_002", "doc_003"]
+}

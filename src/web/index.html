@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Plasticity - Semantic Search</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="header-content">
+                <h1 class="logo">
+                    <i class="fas fa-brain"></i>
+                    Plasticity
+                </h1>
+                <p class="tagline">Intelligent Semantic Search</p>
+            </div>
+        </header>
+
+        <main class="main">
+            <div class="search-section">
+                <div class="search-card">
+                    <h2>Search Documents</h2>
+                    <div class="search-form">
+                        <div class="input-group">
+                            <textarea 
+                                id="searchQuery" 
+                                placeholder="Enter your search query or paste a vector..."
+                                rows="3"
+                            ></textarea>
+                            <button id="searchBtn" class="btn btn-primary">
+                                <i class="fas fa-search"></i>
+                                Search
+                            </button>
+                        </div>
+                        
+                        <div class="search-options">
+                            <div class="option-group">
+                                <label for="limit">Limit:</label>
+                                <select id="limit">
+                                    <option value="5">5 results</option>
+                                    <option value="10" selected>10 results</option>
+                                    <option value="20">20 results</option>
+                                    <option value="50">50 results</option>
+                                </select>
+                            </div>
+                            
+                            <div class="option-group">
+                                <label for="topic">Topic:</label>
+                                <input type="text" id="topic" placeholder="Filter by topic...">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="searchResults" class="results-section" style="display: none;">
+                    <h3>Search Results</h3>
+                    <div id="resultsList" class="results-list"></div>
+                </div>
+            </div>
+
+            <div class="ingest-section">
+                <div class="ingest-card">
+                    <h2>Add Document</h2>
+                    <form id="ingestForm">
+                        <div class="form-group">
+                            <label for="docId">Document ID</label>
+                            <input type="text" id="docId" required>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="docContent">Content</label>
+                            <textarea id="docContent" rows="4" required></textarea>
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="docTopic">Topic</label>
+                            <input type="text" id="docTopic" placeholder="e.g., machine_learning">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="docVector">Vector (comma-separated values)</label>
+                            <textarea id="docVector" rows="2" placeholder="0.1, 0.2, 0.3, 0.4, 0.5"></textarea>
+                        </div>
+                        
+                        <button type="submit" class="btn btn-success">
+                            <i class="fas fa-plus"></i>
+                            Add Document
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </main>
+
+        <footer class="footer">
+            <p>&copy; 2024 Plasticity - Advanced Semantic Search System</p>
+        </footer>
+    </div>
+
+    <div id="loadingSpinner" class="loading-spinner" style="display: none;">
+        <div class="spinner"></div>
+    </div>
+
+    <div id="notification" class="notification" style="display: none;">
+        <span id="notificationText"></span>
+        <button onclick="hideNotification()">&times;</button>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
