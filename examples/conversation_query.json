@@ -1,0 +1,12 @@
+{
+  "query_text": "data analysis preferences",
+  "session_id": "session_123",
+  "user_id": "user_456",
+  "context_types": ["preference", "decision"],
+  "time_range": {
+    "start": 1703000000,
+    "end": 1703300000
+  },
+  "include_conversation_context": true,
+  "max_turns": 5
+}

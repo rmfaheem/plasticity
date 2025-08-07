@@ -13,7 +13,8 @@ WORKDIR /app
 COPY . .
 
 # Build the application
-RUN zig build -Doptimize=ReleaseFast
+# RUN zig build -Doptimize=ReleaseFast
+RUN zig build
 
 # Runtime stage
 FROM alpine:latest

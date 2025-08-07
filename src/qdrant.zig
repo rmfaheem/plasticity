@@ -22,6 +22,20 @@ pub const QdrantClient = struct {
         self.http_client.deinit();
     }
 
+    pub fn healthCheck(self: *Self) !void {
+        const url = try std.fmt.allocPrint(self.allocator, "http://{s}:{d}/collections", .{ self.config.host, self.config.port });
+        defer self.allocator.free(url);
+
+        const response = self.makeRequest(.GET, url, null) catch |err| {
+            std.log.err("Qdrant health check failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        defer self.allocator.free(response);
+
+        // If we got here without error, Qdrant is responding
+        std.log.info("Qdrant health check passed", .{});
+    }
+
     pub fn search(self: *Self, query: reranker.SearchQuery) ![]reranker.VectorResult {
         std.log.info("Starting Qdrant search", .{});
 
@@ -348,14 +362,15 @@ pub const QdrantClient = struct {
         try headers.append(.{ .name = "accept", .value = "application/json" });
         try headers.append(.{ .name = "connection", .value = "close" });
 
-        var response_body = std.ArrayList(u8).init(self.allocator);
-
         // Create a new HTTP client for each request to avoid connection reuse issues
         var http_client = std.http.Client{ .allocator = self.allocator };
         defer http_client.deinit();
 
-        // Add connection timeout and retry logic
-        const result = try http_client.fetch(.{
+        // Use fetch() method with dynamic response storage
+        var response_body = std.ArrayList(u8).init(self.allocator);
+        errdefer response_body.deinit();
+
+        _ = try http_client.fetch(.{
             .method = method,
             .location = .{ .uri = uri },
             .extra_headers = headers.items,
@@ -363,9 +378,7 @@ pub const QdrantClient = struct {
             .response_storage = .{ .dynamic = &response_body },
         });
 
-        _ = result; // Use result to avoid linter error
-
-        const response = response_body.toOwnedSlice();
-        return response;
+        // Return owned slice - caller must free with allocator.free()
+        return try response_body.toOwnedSlice();
     }
 };

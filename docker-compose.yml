@@ -70,7 +70,7 @@ services:
     networks:
       - semantic_network
 
-  # Optional: Setup service to initialize databases
+  # Database initialization service
   setup:
     build:
       context: .

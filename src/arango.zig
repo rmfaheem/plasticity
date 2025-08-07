@@ -40,6 +40,20 @@ pub const ArangoClient = struct {
         self.http_client.deinit();
     }
 
+    pub fn healthCheck(self: *Self) !void {
+        const url = try std.fmt.allocPrint(self.allocator, "http://{s}:{d}/_api/version", .{ self.config.host, self.config.port });
+        defer self.allocator.free(url);
+
+        const response = self.makeRequest(.GET, url, null) catch |err| {
+            std.log.err("ArangoDB health check failed: {s}", .{@errorName(err)});
+            return err;
+        };
+        defer self.allocator.free(response);
+
+        // If we got here without error, ArangoDB is responding
+        std.log.info("ArangoDB health check passed", .{});
+    }
+
     pub fn authenticate(self: *Self) !void {
         const url = try std.fmt.allocPrint(self.allocator, "http://{s}:{d}/_api/auth", .{ self.config.host, self.config.port });
         defer self.allocator.free(url);
@@ -84,9 +98,11 @@ pub const ArangoClient = struct {
         defer self.allocator.free(db_json);
 
         // Try to create database (ignore if it already exists)
-        _ = self.makeRequest(.POST, db_url, db_json) catch |err| {
+        const db_response = self.makeRequest(.POST, db_url, db_json) catch |err| {
             std.log.info("Database '{s}' creation failed (may already exist): {s}", .{ self.config.database, @errorName(err) });
+            return; // Early return on database creation failure
         };
+        defer self.allocator.free(db_response);
 
         // Create collections
         const collections = [_][]const u8{ "chunks", "edges", "users", "user_context" };
@@ -110,9 +126,11 @@ pub const ArangoClient = struct {
             defer self.allocator.free(collection_json);
 
             // Try to create collection (ignore if it already exists)
-            _ = self.makeRequest(.POST, collection_url, collection_json) catch |err| {
+            const collection_response = self.makeRequest(.POST, collection_url, collection_json) catch |err| {
                 std.log.info("Collection '{s}' creation failed (may already exist): {s}", .{ collection_name, @errorName(err) });
+                continue;
             };
+            defer self.allocator.free(collection_response);
         }
 
         // Create indexes
@@ -144,9 +162,11 @@ pub const ArangoClient = struct {
             defer self.allocator.free(index_json);
 
             // Try to create index (ignore if it already exists)
-            _ = self.makeRequest(.POST, index_url, index_json) catch |err| {
+            const index_response = self.makeRequest(.POST, index_url, index_json) catch |err| {
                 std.log.info("Index on '{s}' creation failed (may already exist): {s}", .{ index.collection, @errorName(err) });
+                continue;
             };
+            defer self.allocator.free(index_response);
         }
 
         std.log.info("ArangoDB collections and indexes initialized successfully", .{});
@@ -327,13 +347,15 @@ pub const ArangoClient = struct {
         try headers.append(.{ .name = "accept", .value = "application/json" });
         try headers.append(.{ .name = "connection", .value = "close" });
 
-        var response_body = std.ArrayList(u8).init(self.allocator);
-
         // Create a new HTTP client for each request to avoid connection reuse issues
         var http_client = std.http.Client{ .allocator = self.allocator };
         defer http_client.deinit();
 
-        const result = try http_client.fetch(.{
+        // Use fetch() method with dynamic response storage
+        var response_body = std.ArrayList(u8).init(self.allocator);
+        errdefer response_body.deinit();
+
+        _ = try http_client.fetch(.{
             .method = method,
             .location = .{ .uri = uri },
             .extra_headers = headers.items,
@@ -341,8 +363,7 @@ pub const ArangoClient = struct {
             .response_storage = .{ .dynamic = &response_body },
         });
 
-        _ = result; // Ignore result for now
-
-        return response_body.toOwnedSlice();
+        // Return owned slice - caller must free with allocator.free()
+        return try response_body.toOwnedSlice();
     }
 };

@@ -1,0 +1,16 @@
+{
+  "id": "session_123_turn_1",
+  "session_id": "session_123",
+  "turn_number": 1,
+  "timestamp": 1703180000,
+  "user_message": "I prefer using Python for data analysis over R. Can you help me set up a data pipeline?",
+  "assistant_message": "I'll help you set up a Python-based data pipeline. Since you prefer Python for data analysis, I'll use pandas and scikit-learn. What type of data are you working with?",
+  "importance_score": 0.8,
+  "tags": ["preference", "python", "data-analysis", "pipeline"],
+  "user_id": "user_456",
+  "metadata": {
+    "extracted_preferences": ["python_over_r"],
+    "mentioned_technologies": ["pandas", "scikit-learn"],
+    "intent": "data_pipeline_setup"
+  }
+}

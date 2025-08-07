@@ -221,7 +221,7 @@ fn handleRequest(r: zap.Request) !void {
                 r.sendBody("Internal Server Error") catch {};
                 return;
             };
-            
+
             for (context_strings, 0..) |context_str, i| {
                 context_types.?[i] = if (std.mem.eql(u8, context_str, "preference"))
                     .preference
@@ -349,7 +349,7 @@ fn handleRequest(r: zap.Request) !void {
         defer document.deinit(app.allocator);
 
         app.ingest(document) catch |err| {
-            std.log.err("Error ingesting document '{s}': {s}", .{document.id, @errorName(err)});
+            std.log.err("Error ingesting document '{s}': {s}", .{ document.id, @errorName(err) });
             r.setStatus(.internal_server_error);
             const error_msg = try std.fmt.allocPrint(app.allocator, "{{\"error\": \"{s}\", \"details\": \"Failed to ingest document\"}}", .{@errorName(err)});
             defer app.allocator.free(error_msg);
@@ -390,6 +390,51 @@ fn serveFile(r: zap.Request, file_path: []const u8, content_type: []const u8) !v
     r.sendBody(content) catch |err| {
         std.log.err("Error sending file content: {s}", .{@errorName(err)});
     };
+}
+
+fn waitForServices(app: *SemanticSearchApp) !void {
+    const max_retries = 30; // 30 retries = ~5 minutes with 10s delays
+    const retry_delay_ms = 10000; // 10 seconds
+
+    std.log.info("Waiting for Qdrant to be ready...", .{});
+    var qdrant_ready = false;
+    for (0..max_retries) |attempt| {
+        if (app.qdrant_client.healthCheck()) {
+            qdrant_ready = true;
+            std.log.info("Qdrant is ready!", .{});
+            break;
+        } else |_| {
+            if (attempt < max_retries - 1) {
+                std.log.info("Qdrant not ready (attempt {}/{}), waiting 10s...", .{ attempt + 1, max_retries });
+                std.time.sleep(retry_delay_ms * std.time.ns_per_ms);
+            }
+        }
+    }
+
+    if (!qdrant_ready) {
+        std.log.err("Qdrant failed to become ready after {} attempts", .{max_retries});
+        return error.ServiceNotReady;
+    }
+
+    std.log.info("Waiting for ArangoDB to be ready...", .{});
+    var arango_ready = false;
+    for (0..max_retries) |attempt| {
+        if (app.arango_client.healthCheck()) {
+            arango_ready = true;
+            std.log.info("ArangoDB is ready!", .{});
+            break;
+        } else |_| {
+            if (attempt < max_retries - 1) {
+                std.log.info("ArangoDB not ready (attempt {}/{}), waiting 10s...", .{ attempt + 1, max_retries });
+                std.time.sleep(retry_delay_ms * std.time.ns_per_ms);
+            }
+        }
+    }
+
+    if (!arango_ready) {
+        std.log.err("ArangoDB failed to become ready after {} attempts", .{max_retries});
+        return error.ServiceNotReady;
+    }
 }
 
 pub fn main() !void {
@@ -456,13 +501,27 @@ pub fn main() !void {
         std.log.info("Document ingested successfully", .{});
     } else if (std.mem.eql(u8, command, "setup")) {
         std.log.info("Setting up databases...", .{});
-        
+
+        // Use ArenaAllocator for the entire setup operation to eliminate any memory leaks
+        var setup_arena = std.heap.ArenaAllocator.init(allocator);
+        defer setup_arena.deinit(); // All setup memory freed at once
+        const setup_allocator = setup_arena.allocator();
+
+        // Create setup-specific app instance with arena allocator
+        var setup_app = try SemanticSearchApp.init(setup_allocator, "config/config.docker.json");
+        // Note: We don't call deinit() on setup_app since arena.deinit() handles everything
+
+        // Wait for services to be ready with retry logic
+        try waitForServices(&setup_app);
+
         // Initialize Qdrant collection
-        try app.qdrant_client.initCollection();
-        
+        try setup_app.qdrant_client.initCollection();
+        std.log.info("Qdrant collection 'semantic_chunks' created successfully", .{});
+
         // Initialize ArangoDB collections
-        try app.arango_client.initCollections();
-        
+        try setup_app.arango_client.initCollections();
+        std.log.info("ArangoDB collections and indexes initialized successfully", .{});
+
         std.log.info("Database setup completed successfully", .{});
     } else if (std.mem.eql(u8, command, "server")) {
         var indexer = try BackgroundIndexer.init(allocator, &app);
