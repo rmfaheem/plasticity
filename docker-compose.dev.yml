@@ -58,6 +58,7 @@ services:
       - ./src:/app/src:ro
       - ./config:/app/config:ro
       - ./examples:/app/examples:ro
+      - ./setup:/app/setup:ro
       - semantic_dev_logs:/app/logs
     environment:
       - QDRANT_HOST=qdrant

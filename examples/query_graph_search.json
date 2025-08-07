@@ -1,0 +1,6 @@
+{
+  "vector": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+  "limit": 15,
+  "source_node_id": "doc_001",
+  "topic_id": "machine_learning"
+} 

@@ -4,6 +4,7 @@ const json = std.json;
 const SemanticSearchApp = @import("main.zig").SemanticSearchApp;
 const reranker = @import("reranker.zig");
 const utils = @import("utils.zig");
+const embedding = @import("embedding.zig");
 
 const WebServer = struct {
     allocator: std.mem.Allocator,
@@ -79,6 +80,8 @@ const WebServer = struct {
         } else if (std.mem.eql(u8, method, "POST")) {
             if (std.mem.eql(u8, path, "/api/search")) {
                 return try self.handleSearch(request);
+            } else if (std.mem.eql(u8, path, "/api/text-search")) {
+                return try self.handleTextSearch(request);
             } else if (std.mem.eql(u8, path, "/api/ingest")) {
                 return try self.handleIngest(request);
             }
@@ -88,13 +91,107 @@ const WebServer = struct {
     }
 
     fn handleSearch(self: *Self, request: []const u8) ![]const u8 {
+        std.debug.print("Raw search request: {s}\n", .{request});
+
         const body_start = std.mem.indexOf(u8, request, "\r\n\r\n") orelse return badRequest();
         const body = request[body_start + 4 ..];
 
-        const search_query = try utils.parseJson(reranker.SearchQuery, self.allocator, body);
+        // Debug logging
+        std.log.info("Search request body: {s}", .{body});
+        std.debug.print("Search request body: {s}\n", .{body});
+
+        const search_query = utils.parseJson(reranker.SearchQuery, self.allocator, body) catch |err| {
+            std.log.err("Failed to parse search query: {s}", .{@errorName(err)});
+            std.log.err("Request body that failed to parse: {s}", .{body});
+            return internalServerError();
+        };
         defer search_query.deinit();
 
+        // Debug logging
+        std.log.info("Search query parsed successfully", .{});
+        std.debug.print("Search query parsed successfully\n", .{});
+
         const results = try self.app.search(search_query.value);
+        defer {
+            for (results) |result| {
+                result.deinit(self.allocator);
+            }
+            self.allocator.free(results);
+        }
+
+        const results_json = try utils.stringifyJson(self.allocator, results);
+        defer self.allocator.free(results_json);
+
+        return try std.fmt.allocPrint(self.allocator, "HTTP/1.1 200 OK\r\n" ++
+            "Content-Type: application/json\r\n" ++
+            "Access-Control-Allow-Origin: *\r\n" ++
+            "Content-Length: {d}\r\n\r\n" ++
+            "{s}", .{ results_json.len, results_json });
+    }
+
+    fn handleTextSearch(self: *Self, request: []const u8) ![]const u8 {
+        const body_start = std.mem.indexOf(u8, request, "\r\n\r\n") orelse return badRequest();
+        const body = request[body_start + 4 ..];
+
+        const TextSearchRequest = struct {
+            query: []const u8,
+            limit: ?u32 = null,
+            topic_id: ?[]const u8 = null,
+            user_id: ?[]const u8 = null,
+            context_types: ?[][]const u8 = null,
+        };
+
+        const text_search_request = utils.parseJson(TextSearchRequest, self.allocator, body) catch |err| {
+            std.log.err("Failed to parse text search query: {s}", .{@errorName(err)});
+            return badRequest();
+        };
+        defer text_search_request.deinit();
+
+        std.log.info("Text search query: '{s}'", .{text_search_request.value.query});
+
+        // Initialize embedding service
+        var embedding_service = embedding.EmbeddingService.init(self.allocator, self.app.config.embedding);
+        defer embedding_service.deinit();
+
+        // Convert text to vector
+        const vector = embedding_service.textToVector(text_search_request.value.query) catch |err| {
+            std.log.err("Failed to convert text to vector: {s}", .{@errorName(err)});
+            return internalServerError();
+        };
+        defer self.allocator.free(vector);
+
+        // Convert context_types strings to enums if provided
+        var context_types: ?[]reranker.ContextType = null;
+        if (text_search_request.value.context_types) |context_strings| {
+            context_types = try self.allocator.alloc(reranker.ContextType, context_strings.len);
+            for (context_strings, 0..) |context_str, i| {
+                context_types.?[i] = if (std.mem.eql(u8, context_str, "preference"))
+                    .preference
+                else if (std.mem.eql(u8, context_str, "decision"))
+                    .decision
+                else if (std.mem.eql(u8, context_str, "observation"))
+                    .observation
+                else {
+                    self.allocator.free(context_types.?);
+                    return badRequest();
+                };
+            }
+        }
+        defer if (context_types) |ct| self.allocator.free(ct);
+
+        // Create search query
+        const search_query = reranker.SearchQuery{
+            .vector = vector,
+            .limit = text_search_request.value.limit,
+            .topic_id = text_search_request.value.topic_id,
+            .user_id = text_search_request.value.user_id,
+            .context_types = context_types,
+            .time_range = null,
+            .source_node_id = null,
+        };
+
+        // Perform search
+        const results = try self.app.search(search_query);
         defer {
             for (results) |result| {
                 result.deinit(self.allocator);
@@ -116,10 +213,13 @@ const WebServer = struct {
         const body_start = std.mem.indexOf(u8, request, "\r\n\r\n") orelse return badRequest();
         const body = request[body_start + 4 ..];
 
-        const document = try utils.parseJson(reranker.Document, self.allocator, body);
-        defer document.deinit();
+        const json_document = try utils.parseJson(reranker.DocumentJson, self.allocator, body);
+        defer json_document.deinit();
 
-        try self.app.ingest(document.value);
+        const document = try reranker.Document.fromJson(self.allocator, json_document.value);
+        defer document.deinit(self.allocator);
+
+        try self.app.ingest(document);
 
         return try std.fmt.allocPrint(self.allocator, "HTTP/1.1 200 OK\r\n" ++
             "Content-Type: application/json\r\n" ++
@@ -154,15 +254,27 @@ fn serveStaticFile(path: []const u8) []const u8 {
 }
 
 fn badRequest() []const u8 {
-    return "HTTP/1.1 400 Bad Request\r\n\r\n";
+    return "HTTP/1.1 400 Bad Request\r\n" ++
+        "Content-Type: application/json\r\n" ++
+        "Access-Control-Allow-Origin: *\r\n" ++
+        "Content-Length: 21\r\n\r\n" ++
+        "{\"error\":\"Bad Request\"}";
 }
 
 fn notFound() []const u8 {
-    return "HTTP/1.1 404 Not Found\r\n\r\n";
+    return "HTTP/1.1 404 Not Found\r\n" ++
+        "Content-Type: application/json\r\n" ++
+        "Access-Control-Allow-Origin: *\r\n" ++
+        "Content-Length: 23\r\n\r\n" ++
+        "{\"error\":\"Not Found\"}";
 }
 
 fn internalServerError() []const u8 {
-    return "HTTP/1.1 500 Internal Server Error\r\n\r\n";
+    return "HTTP/1.1 500 Internal Server Error\r\n" ++
+        "Content-Type: application/json\r\n" ++
+        "Access-Control-Allow-Origin: *\r\n" ++
+        "Content-Length: 21\r\n\r\n" ++
+        "{\"error\":\"Internal Server Error\"}";
 }
 
 pub fn main() !void {

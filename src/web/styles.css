@@ -72,6 +72,76 @@ h2 {
     color: #2d3748;
 }
 
+/* Tab System */
+.tab-navigation {
+    display: flex;
+    border-bottom: 2px solid #e2e8f0;
+    margin-bottom: 1.5rem;
+}
+
+.tab-btn {
+    background: none;
+    border: none;
+    padding: 0.75rem 1.5rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: #718096;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.tab-btn:hover {
+    color: #4299e1;
+}
+
+.tab-btn.active {
+    color: #4299e1;
+    border-bottom-color: #4299e1;
+}
+
+.tab-content {
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+/* JSON Input Section */
+.json-input-section {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.json-actions {
+    display: flex;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.json-validation {
+    padding: 0.75rem;
+    border-radius: 6px;
+    font-size: 0.875rem;
+}
+
+.json-validation.success {
+    background: #f0fff4;
+    color: #22543d;
+    border: 1px solid #9ae6b4;
+}
+
+.json-validation.error {
+    background: #fed7d7;
+    color: #742a2a;
+    border: 1px solid #feb2b2;
+}
+
 /* Forms */
 .search-form, #ingestForm {
     display: flex;
@@ -133,6 +203,26 @@ textarea:focus, input:focus {
 
 .btn-success:hover {
     background: #38a169;
+}
+
+.btn-secondary {
+    background: #718096;
+    color: white;
+}
+
+.btn-secondary:hover {
+    background: #4a5568;
+}
+
+.btn-outline {
+    background: transparent;
+    color: #4299e1;
+    border: 1px solid #4299e1;
+}
+
+.btn-outline:hover {
+    background: #4299e1;
+    color: white;
 }
 
 /* Search options */

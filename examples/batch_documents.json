@@ -1,0 +1,35 @@
+[
+  {
+    "id": "batch_doc_001",
+    "vector": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+    "timestamp": 1722516000,
+    "content": "First document in batch about machine learning basics.",
+    "topic_id": "machine_learning",
+    "user_id": "user_123",
+    "context_type": "preference"
+  },
+  {
+    "id": "batch_doc_002",
+    "vector": [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+    "timestamp": 1722516100,
+    "content": "Second document in batch about deep learning applications.",
+    "topic_id": "machine_learning",
+    "user_id": "user_123",
+    "context_type": "preference",
+    "related_documents": ["batch_doc_001"]
+  },
+  {
+    "id": "batch_doc_003",
+    "vector": [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+    "timestamp": 1722516200,
+    "content": "Third document in batch about neural network optimization.",
+    "topic_id": "machine_learning",
+    "user_id": "user_123",
+    "context_type": "observation",
+    "related_documents": ["batch_doc_001", "batch_doc_002"],
+    "metadata": {
+      "optimization_technique": "gradient_descent",
+      "performance_improvement": "15%"
+    }
+  }
+] 

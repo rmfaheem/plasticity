@@ -1,0 +1,11 @@
+{
+  "vector": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+  "limit": 5,
+  "user_id": "user_123",
+  "context_types": ["preference", "decision"],
+  "time_range": {
+    "start": 1722480000,
+    "end": 1722566400
+  },
+  "topic_id": "nlp"
+} 

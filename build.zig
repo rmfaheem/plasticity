@@ -39,6 +39,10 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
+
+    // Link zap to tests
+    unit_tests.root_module.addImport("zap", zap.module("zap"));
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
 }

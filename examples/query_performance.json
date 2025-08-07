@@ -1,0 +1,7 @@
+{
+  "vector": [0.13, 0.24, 0.35, 0.46, 0.57, 0.68, 0.79, 0.90],
+  "limit": 8,
+  "topic_id": "performance",
+  "context_types": ["observation"],
+  "source_node_id": "perf_doc_001"
+} 

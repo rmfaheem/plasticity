@@ -1,0 +1,16 @@
+{
+  "id": "decision_doc_001",
+  "vector": [0.11, 0.22, 0.33, 0.44, 0.55, 0.66, 0.77, 0.88],
+  "timestamp": 1722516000,
+  "content": "Decision to implement microservices architecture for improved scalability.",
+  "topic_id": "architecture",
+  "user_id": "user_456",
+  "context_type": "decision",
+  "related_documents": ["arch_doc_001", "arch_doc_002"],
+  "metadata": {
+    "decision_type": "technical_architecture",
+    "impact_level": "high",
+    "stakeholders": "engineering_team, product_team",
+    "rationale": "Improved scalability and maintainability"
+  }
+} 

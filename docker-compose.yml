@@ -89,7 +89,7 @@ services:
       - ARANGO_PORT=8529
       - ARANGO_ROOT_PASSWORD=password
     restart: "no"
-    command: ["sh", "/app/setup/init-databases.sh"]
+    command: ["setup"]
     networks:
       - semantic_network
 

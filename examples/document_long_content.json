@@ -1,0 +1,17 @@
+{
+  "id": "long_content_doc_001",
+  "vector": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+  "timestamp": 1722516000,
+  "content": "This is a comprehensive document about the implementation of a distributed system architecture. The system utilizes microservices to achieve high availability and scalability. Key components include load balancers, API gateways, service discovery, and distributed databases. The architecture follows the twelve-factor app methodology and implements circuit breakers for fault tolerance. Monitoring and observability are achieved through centralized logging, metrics collection, and distributed tracing. The deployment strategy uses blue-green deployments with automated rollback capabilities. Security is implemented at multiple layers including network security, application security, and data encryption at rest and in transit.",
+  "topic_id": "distributed_systems",
+  "user_id": "user_789",
+  "context_type": "decision",
+  "related_documents": ["arch_doc_001", "deployment_doc_001", "security_doc_001"],
+  "metadata": {
+    "document_type": "technical_specification",
+    "complexity_level": "advanced",
+    "estimated_reading_time": "5_minutes",
+    "review_status": "approved",
+    "stakeholders": ["engineering_team", "devops_team", "security_team"]
+  }
+} 

@@ -1,0 +1,6 @@
+{
+  "query": "architecture decisions for scalability",
+  "limit": 10,
+  "context_types": ["decision"],
+  "topic_id": "architecture"
+}

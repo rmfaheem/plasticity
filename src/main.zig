@@ -5,8 +5,46 @@ const qdrant = @import("qdrant.zig");
 const arango = @import("arango.zig");
 const reranker = @import("reranker.zig");
 const utils = @import("utils.zig");
+const embedding = @import("embedding.zig");
 
 var global_app: *SemanticSearchApp = undefined;
+
+const BackgroundIndexer = struct {
+    allocator: std.mem.Allocator,
+    app: *SemanticSearchApp,
+    running: bool,
+
+    pub fn init(allocator: std.mem.Allocator, app: *SemanticSearchApp) !*BackgroundIndexer {
+        const indexer = try allocator.create(BackgroundIndexer);
+        indexer.* = .{ .allocator = allocator, .app = app, .running = true };
+        return indexer;
+    }
+
+    pub fn start(self: *BackgroundIndexer) !void {
+        while (self.running) {
+            // Simulate processing conversation chunks
+            const documents = try self.fetchUnindexedChunks();
+            defer {
+                for (documents) |doc| doc.deinit(self.allocator);
+                self.allocator.free(documents);
+            }
+
+            for (documents) |doc| {
+                try self.app.ingest(doc);
+            }
+            std.time.sleep(self.app.config.persistent_memory.indexing_interval * std.time.ns_per_s);
+        }
+    }
+
+    fn fetchUnindexedChunks(self: *BackgroundIndexer) ![]reranker.Document {
+        // Placeholder: Fetch unindexed conversation chunks from a queue or database
+        return self.allocator.alloc(reranker.Document, 0);
+    }
+
+    pub fn stop(self: *BackgroundIndexer) void {
+        self.running = false;
+    }
+};
 
 const SemanticSearchApp = struct {
     allocator: std.mem.Allocator,
@@ -65,7 +103,7 @@ const SemanticSearchApp = struct {
             self.allocator,
             vector_results,
             &graph_context,
-            query,
+            self.config,
         );
 
         return ranked_results;
@@ -73,10 +111,16 @@ const SemanticSearchApp = struct {
 
     pub fn ingest(self: *Self, document: reranker.Document) !void {
         // Store vector in Qdrant
-        try self.qdrant_client.upsert(document);
+        self.qdrant_client.upsert(document) catch |err| {
+            std.log.err("Error upserting to Qdrant: {s}", .{@errorName(err)});
+            return err;
+        };
 
         // Store graph relationships in ArangoDB
-        try self.arango_client.upsertNode(document);
+        self.arango_client.upsertNode(document) catch |err| {
+            std.log.err("Error upserting to ArangoDB: {s}", .{@errorName(err)});
+            return err;
+        };
 
         std.log.info("Ingested document: {s}", .{document.id});
     }
@@ -93,8 +137,6 @@ fn startServer(app: *SemanticSearchApp) !void {
 
     std.log.info("Server listening on port {d}", .{app.config.server.port});
     try listener.listen();
-
-    std.debug.print("Listening on 0.0.0.0:3000\n", .{});
 
     // start worker threads
     zap.start(.{
@@ -132,6 +174,108 @@ fn handleRequest(r: zap.Request) !void {
             std.log.err("Error serving static file: {s}", .{@errorName(err)});
             r.setStatus(.not_found);
             r.sendBody("Not Found") catch {};
+        };
+        return;
+    }
+
+    if (std.mem.eql(u8, path, "/api/text-search") and std.mem.eql(u8, method, "POST")) {
+        const body = r.body orelse return error.NoBody;
+
+        const TextSearchRequest = struct {
+            query: []const u8,
+            limit: ?u32 = null,
+            topic_id: ?[]const u8 = null,
+            user_id: ?[]const u8 = null,
+            context_types: ?[][]const u8 = null,
+        };
+
+        const text_search_parsed = utils.parseJson(TextSearchRequest, app.allocator, body) catch |err| {
+            std.log.err("Error parsing text search JSON: {s}", .{@errorName(err)});
+            r.setStatus(.bad_request);
+            r.sendBody("Bad Request") catch {};
+            return;
+        };
+        defer text_search_parsed.deinit();
+
+        std.log.info("Text search query: '{s}'", .{text_search_parsed.value.query});
+
+        // Initialize embedding service
+        var embedding_service = embedding.EmbeddingService.init(app.allocator, app.config.embedding);
+        defer embedding_service.deinit();
+
+        // Convert text to vector
+        const vector = embedding_service.textToVector(text_search_parsed.value.query) catch |err| {
+            std.log.err("Failed to convert text to vector: {s}", .{@errorName(err)});
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+        defer app.allocator.free(vector);
+
+        // Convert context_types strings to enums if provided
+        var context_types: ?[]reranker.ContextType = null;
+        if (text_search_parsed.value.context_types) |context_strings| {
+            context_types = app.allocator.alloc(reranker.ContextType, context_strings.len) catch |err| {
+                std.log.err("Failed to allocate context types: {s}", .{@errorName(err)});
+                r.setStatus(.internal_server_error);
+                r.sendBody("Internal Server Error") catch {};
+                return;
+            };
+            
+            for (context_strings, 0..) |context_str, i| {
+                context_types.?[i] = if (std.mem.eql(u8, context_str, "preference"))
+                    .preference
+                else if (std.mem.eql(u8, context_str, "decision"))
+                    .decision
+                else if (std.mem.eql(u8, context_str, "observation"))
+                    .observation
+                else {
+                    std.log.err("Invalid context type: {s}", .{context_str});
+                    if (context_types) |ct| app.allocator.free(ct);
+                    r.setStatus(.bad_request);
+                    r.sendBody("Invalid context type") catch {};
+                    return;
+                };
+            }
+        }
+        defer if (context_types) |ct| app.allocator.free(ct);
+
+        // Create search query
+        const search_query = reranker.SearchQuery{
+            .vector = vector,
+            .limit = text_search_parsed.value.limit,
+            .topic_id = text_search_parsed.value.topic_id,
+            .user_id = text_search_parsed.value.user_id,
+            .context_types = context_types,
+            .time_range = null,
+            .source_node_id = null,
+        };
+
+        const results = app.search(search_query) catch |err| {
+            std.log.err("Error searching: {s}", .{@errorName(err)});
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+        defer {
+            for (results) |*result| {
+                result.deinit(app.allocator);
+            }
+            app.allocator.free(results);
+        }
+
+        const json = utils.stringifyJson(app.allocator, results) catch |err| {
+            std.log.err("Error stringifying JSON: {s}", .{@errorName(err)});
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+        defer app.allocator.free(json);
+
+        r.setStatus(.ok);
+        r.setHeader("content-type", "application/json") catch {};
+        r.sendBody(json) catch |err| {
+            std.log.err("Error sending response: {s}", .{@errorName(err)});
         };
         return;
     }
@@ -176,21 +320,43 @@ fn handleRequest(r: zap.Request) !void {
         return;
     }
 
+    if (std.mem.eql(u8, path, "/api/health") and std.mem.eql(u8, method, "GET")) {
+        r.setStatus(.ok);
+        r.setHeader("content-type", "application/json") catch {};
+        r.sendBody("{\"status\":\"ok\"}") catch |err| {
+            std.log.err("Error sending health response: {s}", .{@errorName(err)});
+        };
+        return;
+    }
+
     if (std.mem.eql(u8, path, "/api/ingest") and std.mem.eql(u8, method, "POST")) {
         const body = r.body orelse return error.NoBody;
 
-        const doc_parsed = utils.parseJson(reranker.Document, app.allocator, body) catch |err| {
+        const json_doc_parsed = utils.parseJson(reranker.DocumentJson, app.allocator, body) catch |err| {
             std.log.err("Error parsing JSON: {s}", .{@errorName(err)});
             r.setStatus(.bad_request);
             r.sendBody("Bad Request") catch {};
             return;
         };
-        defer doc_parsed.deinit();
+        defer json_doc_parsed.deinit();
 
-        app.ingest(doc_parsed.value) catch |err| {
-            std.log.err("Error ingesting: {s}", .{@errorName(err)});
+        const document = reranker.Document.fromJson(app.allocator, json_doc_parsed.value) catch |err| {
+            std.log.err("Error converting document: {s}", .{@errorName(err)});
             r.setStatus(.internal_server_error);
             r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+        defer document.deinit(app.allocator);
+
+        app.ingest(document) catch |err| {
+            std.log.err("Error ingesting document '{s}': {s}", .{document.id, @errorName(err)});
+            r.setStatus(.internal_server_error);
+            const error_msg = try std.fmt.allocPrint(app.allocator, "{{\"error\": \"{s}\", \"details\": \"Failed to ingest document\"}}", .{@errorName(err)});
+            defer app.allocator.free(error_msg);
+            r.setHeader("content-type", "application/json") catch {};
+            r.sendBody(error_msg) catch |send_err| {
+                std.log.err("Error sending error response: {s}", .{@errorName(send_err)});
+            };
             return;
         };
 
@@ -242,7 +408,7 @@ pub fn main() !void {
         return;
     }
 
-    var app = try SemanticSearchApp.init(allocator, "config/config.json");
+    var app = try SemanticSearchApp.init(allocator, "config/config.docker.json");
     defer app.deinit();
 
     const command = args[1];
@@ -280,15 +446,85 @@ pub fn main() !void {
         const doc_json = try std.fs.cwd().readFileAlloc(allocator, args[2], 1024 * 1024);
         defer allocator.free(doc_json);
 
-        const document = try utils.parseJson(reranker.Document, allocator, doc_json);
-        defer document.deinit();
+        const json_document = try utils.parseJson(reranker.DocumentJson, allocator, doc_json);
+        defer json_document.deinit();
 
-        try app.ingest(document.value);
+        const document = try reranker.Document.fromJson(allocator, json_document.value);
+        defer document.deinit(allocator);
+
+        try app.ingest(document);
         std.log.info("Document ingested successfully", .{});
+    } else if (std.mem.eql(u8, command, "setup")) {
+        std.log.info("Setting up databases...", .{});
+        
+        // Initialize Qdrant collection
+        try app.qdrant_client.initCollection();
+        
+        // Initialize ArangoDB collections
+        try app.arango_client.initCollections();
+        
+        std.log.info("Database setup completed successfully", .{});
     } else if (std.mem.eql(u8, command, "server")) {
+        var indexer = try BackgroundIndexer.init(allocator, &app);
+        const indexer_thread = try std.Thread.spawn(.{}, BackgroundIndexer.start, .{indexer});
+        defer indexer.stop();
+        defer indexer_thread.join();
+
         try startServer(&app);
     } else {
         std.log.err("Unknown command: {s}", .{command});
         return;
     }
+}
+
+test "ingest and retrieve user context" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var app = try SemanticSearchApp.init(allocator, "config/config.docker.json");
+    defer app.deinit();
+
+    const doc_id = "test_doc_user_context";
+    const vector = try allocator.alloc(f32, 768);
+    defer allocator.free(vector);
+    @memset(vector, 0.1);
+
+    const document = reranker.Document{
+        .id = doc_id,
+        .vector = vector,
+        .timestamp = std.time.timestamp(),
+        .user_id = "user_123",
+        .context_type = .preference,
+    };
+    // No deinit, since we are passing ownership to ingest
+
+    try app.ingest(document);
+
+    const query_vector = try allocator.alloc(f32, 768);
+    defer allocator.free(query_vector);
+    @memset(query_vector, 0.1);
+
+    const query = reranker.SearchQuery{
+        .vector = query_vector,
+        .user_id = "user_123",
+        .context_types = &[_]reranker.ContextType{.preference},
+    };
+    // No deinit, since we are passing ownership to search
+
+    const results = try app.search(query);
+    defer {
+        for (results) |result| result.deinit(allocator);
+        allocator.free(results);
+    }
+
+    try std.testing.expect(results.len > 0);
+    var found = false;
+    for (results) |result| {
+        if (std.mem.eql(u8, result.id, doc_id)) {
+            found = true;
+            break;
+        }
+    }
+    try std.testing.expect(found);
 }

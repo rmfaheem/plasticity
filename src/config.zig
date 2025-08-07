@@ -1,5 +1,6 @@
 const std = @import("std");
 const utils = @import("utils.zig");
+const embedding = @import("embedding.zig");
 
 pub const QdrantConfig = struct {
     host: []const u8,
@@ -42,11 +43,19 @@ pub const ServerConfig = struct {
     port: u16 = 8080,
 };
 
+pub const PersistentMemoryConfig = struct {
+    retention_period: u64 = 365,
+    indexing_interval: u64 = 3600,
+    max_context_size: u64 = 1048576,
+};
+
 pub const Config = struct {
     qdrant: QdrantConfig,
     arango: ArangoConfig,
     ranking: RankingConfig = .{},
     server: ServerConfig = .{},
+    persistent_memory: PersistentMemoryConfig = .{},
+    embedding: embedding.EmbeddingConfig = .{},
 
     pub fn deinit(self: *const Config, allocator: std.mem.Allocator) void {
         self.qdrant.deinit(allocator);
@@ -61,16 +70,29 @@ pub fn loadConfig(allocator: std.mem.Allocator, path: []const u8) !Config {
     const parsed = try utils.parseJson(Config, allocator, config_json);
     defer parsed.deinit();
 
+    // Check for Docker environment variables
+    const qdrant_host = std.process.getEnvVarOwned(allocator, "QDRANT_HOST") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => try allocator.dupe(u8, parsed.value.qdrant.host),
+        else => return err,
+    };
+    defer allocator.free(qdrant_host);
+
+    const arango_host = std.process.getEnvVarOwned(allocator, "ARANGO_HOST") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => try allocator.dupe(u8, parsed.value.arango.host),
+        else => return err,
+    };
+    defer allocator.free(arango_host);
+
     // We need to duplicate the config data since the parsed data will be freed
     const result = Config{
         .qdrant = QdrantConfig{
-            .host = try allocator.dupe(u8, parsed.value.qdrant.host),
+            .host = try allocator.dupe(u8, qdrant_host),
             .port = parsed.value.qdrant.port,
             .collection_name = try allocator.dupe(u8, parsed.value.qdrant.collection_name),
             .api_key = if (parsed.value.qdrant.api_key) |key| try allocator.dupe(u8, key) else null,
         },
         .arango = ArangoConfig{
-            .host = try allocator.dupe(u8, parsed.value.arango.host),
+            .host = try allocator.dupe(u8, arango_host),
             .port = parsed.value.arango.port,
             .database = try allocator.dupe(u8, parsed.value.arango.database),
             .username = try allocator.dupe(u8, parsed.value.arango.username),
@@ -78,6 +100,8 @@ pub fn loadConfig(allocator: std.mem.Allocator, path: []const u8) !Config {
         },
         .ranking = parsed.value.ranking,
         .server = parsed.value.server,
+        .persistent_memory = parsed.value.persistent_memory,
+        .embedding = parsed.value.embedding,
     };
 
     return result;

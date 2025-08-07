@@ -1,0 +1,6 @@
+{
+  "id": "minimal_doc_001",
+  "vector": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+  "timestamp": 1722516000,
+  "content": "A simple document with minimal required fields."
+} 

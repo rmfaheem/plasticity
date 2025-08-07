@@ -1,0 +1,17 @@
+{
+  "id": "observation_doc_001",
+  "vector": [0.13, 0.24, 0.35, 0.46, 0.57, 0.68, 0.79, 0.90],
+  "timestamp": 1722516000,
+  "content": "Observed 40% performance improvement after implementing caching layer.",
+  "topic_id": "performance",
+  "user_id": "user_789",
+  "context_type": "observation",
+  "related_documents": ["perf_doc_001", "perf_doc_002"],
+  "metadata": {
+    "observation_type": "performance_measurement",
+    "measurement_period": "2_weeks",
+    "baseline_performance": "100ms",
+    "improved_performance": "60ms",
+    "confidence_interval": "95%"
+  }
+} 

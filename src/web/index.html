@@ -28,7 +28,7 @@
                         <div class="input-group">
                             <textarea 
                                 id="searchQuery" 
-                                placeholder="Enter your search query or paste a vector..."
+                                placeholder="Enter text to search (e.g., 'machine learning neural networks') or a vector as JSON array [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]"
                                 rows="3"
                             ></textarea>
                             <button id="searchBtn" class="btn btn-primary">
@@ -65,32 +65,127 @@
             <div class="ingest-section">
                 <div class="ingest-card">
                     <h2>Add Document</h2>
-                    <form id="ingestForm">
-                        <div class="form-group">
-                            <label for="docId">Document ID</label>
-                            <input type="text" id="docId" required>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="docContent">Content</label>
-                            <textarea id="docContent" rows="4" required></textarea>
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="docTopic">Topic</label>
-                            <input type="text" id="docTopic" placeholder="e.g., machine_learning">
-                        </div>
-                        
-                        <div class="form-group">
-                            <label for="docVector">Vector (comma-separated values)</label>
-                            <textarea id="docVector" rows="2" placeholder="0.1, 0.2, 0.3, 0.4, 0.5"></textarea>
-                        </div>
-                        
-                        <button type="submit" class="btn btn-success">
-                            <i class="fas fa-plus"></i>
-                            Add Document
+                    
+                    <!-- Tab Navigation -->
+                    <div class="tab-navigation">
+                        <button class="tab-btn active" data-tab="form-tab">
+                            <i class="fas fa-edit"></i>
+                            Form Input
                         </button>
-                    </form>
+                        <button class="tab-btn" data-tab="json-tab">
+                            <i class="fas fa-code"></i>
+                            JSON Input
+                        </button>
+                    </div>
+
+                    <!-- Form Tab -->
+                    <div id="form-tab" class="tab-content active">
+                        <form id="ingestForm">
+                            <div class="form-group">
+                                <label for="docId">Document ID</label>
+                                <input type="text" id="docId" required>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="docContent">Content</label>
+                                <textarea id="docContent" rows="4" required></textarea>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="docTopic">Topic</label>
+                                <input type="text" id="docTopic" placeholder="e.g., machine_learning">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="docVector">Vector (comma-separated values)</label>
+                                <textarea id="docVector" rows="2" placeholder="0.1, 0.2, 0.3, 0.4, 0.5"></textarea>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="docUserId">User ID</label>
+                                <input type="text" id="docUserId" placeholder="e.g., user_123">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="docContextType">Context Type</label>
+                                <select id="docContextType">
+                                    <option value="">Select context type...</option>
+                                    <option value="preference">Preference</option>
+                                    <option value="decision">Decision</option>
+                                    <option value="observation">Observation</option>
+                                </select>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="docRelatedDocs">Related Documents (comma-separated)</label>
+                                <input type="text" id="docRelatedDocs" placeholder="doc_002, doc_003">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="docMetadata">Metadata (JSON format)</label>
+                                <textarea id="docMetadata" rows="3" placeholder='{"source": "web", "author": "user"}'></textarea>
+                            </div>
+                            
+                            <button type="submit" class="btn btn-success">
+                                <i class="fas fa-plus"></i>
+                                Add Document
+                            </button>
+                        </form>
+                    </div>
+
+                    <!-- JSON Tab -->
+                    <div id="json-tab" class="tab-content">
+                        <div class="json-input-section">
+                            <div class="form-group">
+                                <label for="jsonInput">JSON Document(s) - Single or Batch</label>
+                                <textarea 
+                                    id="jsonInput" 
+                                    rows="15" 
+                                    placeholder='Single document:
+{
+  "id": "doc_001",
+  "content": "This is the document content...",
+  "vector": [0.1, 0.2, 0.3, 0.4, 0.5],
+  "topic_id": "machine_learning",
+  "user_id": "user_123",
+  "context_type": "preference",
+  "related_documents": ["doc_002", "doc_003"],
+  "metadata": {
+    "source": "web",
+    "author": "user",
+    "tags": ["ai", "ml"]
+  }
+}
+
+Or batch (array):
+[{document1}, {document2}, ...]'
+                                ></textarea>
+                            </div>
+                            
+                            <div class="json-actions">
+                                <button id="validateJsonBtn" class="btn btn-secondary">
+                                    <i class="fas fa-check"></i>
+                                    Validate JSON
+                                </button>
+                                <button id="ingestJsonBtn" class="btn btn-success">
+                                    <i class="fas fa-upload"></i>
+                                    Ingest Document(s)
+                                </button>
+                                <button id="loadExampleBtn" class="btn btn-outline">
+                                    <i class="fas fa-lightbulb"></i>
+                                    Load Single Example
+                                </button>
+                                <button id="loadBatchExampleBtn" class="btn btn-outline">
+                                    <i class="fas fa-layer-group"></i>
+                                    Load Batch Example
+                                </button>
+                            </div>
+                            
+                            <div id="jsonValidation" class="json-validation" style="display: none;">
+                                <div id="validationMessage"></div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </main>

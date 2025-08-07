@@ -1,12 +1,12 @@
 {
   "qdrant": {
-    "host": "qdrant",
+    "host": "localhost",
     "port": 6333,
     "collection_name": "semantic_chunks",
     "api_key": null
   },
   "arango": {
-    "host": "arangodb",
+    "host": "localhost",
     "port": 8529,
     "database": "semantic_graph",
     "username": "root",
@@ -17,5 +17,10 @@
     "recency_weight": 0.3,
     "graph_weight": 0.2,
     "recency_decay_factor": 0.1
+  },
+  "persistent_memory": {
+    "retention_period": 365,
+    "indexing_interval": 3600,
+    "max_context_size": 1048576
   }
 }
