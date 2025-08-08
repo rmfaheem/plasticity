@@ -1,0 +1,4 @@
+{
+  "text": "I really prefer using Python for data analysis because it has better libraries like pandas and numpy. I've decided to migrate all our R scripts to Python next quarter.",
+  "extraction_types": ["preference", "decision"]
+}

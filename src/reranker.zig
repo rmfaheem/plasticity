@@ -1,17 +1,15 @@
 const std = @import("std");
 const arango = @import("arango.zig");
 const config = @import("config.zig");
+const conversation = @import("conversation.zig");
 
 pub const TimeRange = struct {
     start: i64,
     end: i64,
 };
 
-pub const ContextType = enum {
-    preference,
-    decision,
-    observation,
-};
+// Use the ContextType from conversation.zig (per LLM Agent Integration Proposal)
+pub const ContextType = conversation.ContextType;
 
 pub const SearchQuery = struct {
     vector: []const f32,

@@ -1,0 +1,9 @@
+{
+  "preferences": {
+    "language": "python", 
+    "verbosity": "concise",
+    "preferred_libraries": ["pandas", "numpy", "scikit-learn", "matplotlib"],
+    "notification_frequency": "daily",
+    "auto_save": true
+  }
+}

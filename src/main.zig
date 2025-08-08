@@ -333,17 +333,18 @@ fn handleRequest(r: zap.Request) !void {
         const app2 = global_app;
         const body = r.body orelse return error.NoBody;
 
-        const ConversationSearchRequest = struct {
+        // ConversationQuery input format matching LLM Agent Integration Proposal
+        const ConversationQueryInput = struct {
             query_text: []const u8,
-            limit: ?u32 = null,
             session_id: ?[]const u8 = null,
             user_id: ?[]const u8 = null,
-            context_types: ?[][]const u8 = null,
+            context_types: ?[][]const u8 = null, // String array converted to ContextType enum
             time_range: ?struct { start: i64, end: i64 } = null,
-            tags: ?[][]const u8 = null,
+            include_conversation_context: ?bool = null, // New field from proposal
+            max_turns: ?u32 = null, // New field from proposal (renamed from limit)
         };
 
-        const parsed = utils.parseJson(ConversationSearchRequest, app2.allocator, body) catch |err| {
+        const parsed = utils.parseJson(ConversationQueryInput, app2.allocator, body) catch |err| {
             std.log.err("Error parsing conversation search: {s}", .{@errorName(err)});
             r.setStatus(.bad_request);
             r.sendBody("Bad Request") catch {};
@@ -361,10 +362,10 @@ fn handleRequest(r: zap.Request) !void {
             return;
         };
 
-        // Convert context types
-        var context_types: ?[]reranker.ContextType = null;
+        // Convert context types from strings to ContextType enum (from conversation.zig)
+        var context_types: ?[]conversation.ContextType = null;
         if (parsed.value.context_types) |context_strings| {
-            context_types = app2.allocator.alloc(reranker.ContextType, context_strings.len) catch {
+            context_types = app2.allocator.alloc(conversation.ContextType, context_strings.len) catch {
                 r.setStatus(.internal_server_error);
                 r.sendBody("Internal Server Error") catch {};
                 return;
@@ -374,23 +375,33 @@ fn handleRequest(r: zap.Request) !void {
                     .preference
                 else if (std.mem.eql(u8, context_str, "decision"))
                     .decision
+                else if (std.mem.eql(u8, context_str, "fact"))
+                    .fact
+                else if (std.mem.eql(u8, context_str, "task"))
+                    .task
                 else if (std.mem.eql(u8, context_str, "observation"))
                     .observation
+                else if (std.mem.eql(u8, context_str, "intent"))
+                    .intent
+                else if (std.mem.eql(u8, context_str, "emotion"))
+                    .emotion
+                else if (std.mem.eql(u8, context_str, "goal"))
+                    .goal
                 else
-                    .observation;
+                    .observation; // Default fallback
             }
         }
 
         const search_query = reranker.SearchQuery{
             .vector = vector,
-            .limit = parsed.value.limit,
+            .limit = parsed.value.max_turns orelse 10, // Use max_turns from proposal, default to 10
             .time_range = if (parsed.value.time_range) |tr| reranker.TimeRange{ .start = tr.start, .end = tr.end } else null,
             .topic_id = null,
             .source_node_id = null,
             .user_id = parsed.value.user_id,
             .context_types = context_types,
             .session_id = parsed.value.session_id,
-            .tags = parsed.value.tags,
+            .tags = null, // Remove tags field since it's not in ConversationQuery proposal
         };
 
         const results = app2.search(search_query) catch |err| {
@@ -528,6 +539,302 @@ fn handleRequest(r: zap.Request) !void {
         return;
     }
 
+    if (std.mem.eql(u8, path, "/api/context/extract") and std.mem.eql(u8, method, "POST")) {
+        const body = r.body orelse return error.NoBody;
+
+        // Context extraction request format per LLM Agent Integration Proposal
+        const ContextExtractionRequest = struct {
+            text: []const u8,
+            extraction_types: ?[][]const u8 = null, // Optional: ["preference", "decision", "fact", "task", etc.]
+        };
+
+        const parsed = utils.parseJson(ContextExtractionRequest, app.allocator, body) catch |err| {
+            std.log.err("Error parsing context extraction request: {s}", .{@errorName(err)});
+            r.setStatus(.bad_request);
+            r.sendBody("Bad Request") catch {};
+            return;
+        };
+        defer parsed.deinit();
+
+        // Convert extraction types from strings to ContextType enum
+        var extraction_types: ?[]conversation.ContextType = null;
+        if (parsed.value.extraction_types) |type_strings| {
+            extraction_types = app.allocator.alloc(conversation.ContextType, type_strings.len) catch {
+                r.setStatus(.internal_server_error);
+                r.sendBody("Internal Server Error") catch {};
+                return;
+            };
+            for (type_strings, 0..) |type_str, i| {
+                extraction_types.?[i] = if (std.mem.eql(u8, type_str, "preference"))
+                    .preference
+                else if (std.mem.eql(u8, type_str, "decision"))
+                    .decision
+                else if (std.mem.eql(u8, type_str, "fact"))
+                    .fact
+                else if (std.mem.eql(u8, type_str, "task"))
+                    .task
+                else if (std.mem.eql(u8, type_str, "observation"))
+                    .observation
+                else if (std.mem.eql(u8, type_str, "intent"))
+                    .intent
+                else if (std.mem.eql(u8, type_str, "emotion"))
+                    .emotion
+                else if (std.mem.eql(u8, type_str, "goal"))
+                    .goal
+                else
+                    .observation; // Default fallback
+            }
+        }
+
+        // Perform context extraction using existing extract module
+        const extraction_result = extract.extractFromText(app.allocator, parsed.value.text) catch |err| {
+            std.log.err("Error extracting context: {s}", .{@errorName(err)});
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+        defer extraction_result.deinit(app.allocator);
+
+        // Convert extraction result to ConversationExtraction format
+        var context_extractions = std.ArrayList(conversation.ContextExtraction).init(app.allocator);
+        defer {
+            for (context_extractions.items) |*extraction| {
+                extraction.deinit(app.allocator);
+            }
+            context_extractions.deinit();
+        }
+
+        // Filter and convert based on requested extraction types
+        for (extraction_result.items) |item| {
+            // Check if this extraction type is requested (if filter specified)
+            const should_include = if (extraction_types) |types| blk: {
+                for (types) |req_type| {
+                    const item_type: conversation.ContextType = if (std.mem.eql(u8, item.kind, "preference"))
+                        .preference
+                    else if (std.mem.eql(u8, item.kind, "decision"))
+                        .decision
+                    else if (std.mem.eql(u8, item.kind, "task"))
+                        .task
+                    else
+                        .observation;
+
+                    if (req_type == item_type) break :blk true;
+                }
+                break :blk false;
+            } else true; // Include all if no filter specified
+
+            if (should_include) {
+                const extraction_type: conversation.ContextType = if (std.mem.eql(u8, item.kind, "preference"))
+                    .preference
+                else if (std.mem.eql(u8, item.kind, "decision"))
+                    .decision
+                else if (std.mem.eql(u8, item.kind, "task"))
+                    .task
+                else
+                    .observation;
+
+                const context_extraction = conversation.ContextExtraction{
+                    .type = extraction_type,
+                    .content = try app.allocator.dupe(u8, item.value),
+                    .confidence = item.score,
+                    .entities = &[_][]const u8{}, // Empty for now - could be enhanced later
+                };
+                try context_extractions.append(context_extraction);
+            }
+        }
+
+        // Create response format
+        const ContextExtractionResponse = struct {
+            extractions: []conversation.ContextExtraction,
+        };
+
+        const response = ContextExtractionResponse{
+            .extractions = context_extractions.toOwnedSlice() catch {
+                r.setStatus(.internal_server_error);
+                r.sendBody("Internal Server Error") catch {};
+                return;
+            },
+        };
+
+        const json = utils.stringifyJson(app.allocator, response) catch |err| {
+            std.log.err("Error stringifying context extraction response: {s}", .{@errorName(err)});
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+        defer app.allocator.free(json);
+
+        r.setStatus(.ok);
+        r.setHeader("content-type", "application/json") catch {};
+        r.sendBody(json) catch |err| {
+            std.log.err("Error sending context extraction response: {s}", .{@errorName(err)});
+        };
+        return;
+    }
+
+    // Session Management Endpoints per LLM Agent Integration Proposal
+
+    if (std.mem.startsWith(u8, path, "/api/session/") and std.mem.eql(u8, method, "GET")) {
+        // GET /api/session/{session_id} - Get session info
+        const session_id = path["/api/session/".len..];
+
+        if (session_id.len == 0) {
+            r.setStatus(.bad_request);
+            r.sendBody("Session ID required") catch {};
+            return;
+        }
+
+        // Get session from ArangoDB
+        const session_json = app.arango_client.getSessionJson(session_id) catch |err| {
+            if (err == arango.ArangoError.DocumentNotFound) {
+                r.setStatus(.not_found);
+                r.sendBody("{\"error\":\"Session not found\"}") catch {};
+                return;
+            }
+            std.log.err("Error fetching session: {s}", .{@errorName(err)});
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+        defer app.allocator.free(session_json);
+
+        r.setStatus(.ok);
+        r.setHeader("content-type", "application/json") catch {};
+        r.sendBody(session_json) catch |err| {
+            std.log.err("Error sending session response: {s}", .{@errorName(err)});
+        };
+        return;
+    }
+
+    if (std.mem.eql(u8, path, "/api/session/create") and std.mem.eql(u8, method, "POST")) {
+        // POST /api/session/create - Create new agent session
+        const body = r.body orelse return error.NoBody;
+
+        const SessionCreateRequest = struct {
+            agent_id: []const u8,
+            user_id: ?[]const u8 = null,
+            session_summary: ?[]const u8 = null,
+            preferences: ?std.json.Value = null,
+        };
+
+        const parsed = utils.parseJson(SessionCreateRequest, app.allocator, body) catch |err| {
+            std.log.err("Error parsing session create request: {s}", .{@errorName(err)});
+            r.setStatus(.bad_request);
+            r.sendBody("Bad Request") catch {};
+            return;
+        };
+        defer parsed.deinit();
+
+        // Generate session ID
+        const timestamp = std.time.timestamp();
+        const hash = std.hash.Wyhash.hash(0, std.mem.asBytes(&timestamp));
+        const session_id = try std.fmt.allocPrint(app.allocator, "session_{d}_{x}", .{ timestamp, @as(u32, @truncate(hash)) });
+        defer app.allocator.free(session_id);
+
+        // Create AgentSession struct
+        const new_session = conversation.AgentSession{
+            .session_id = try app.allocator.dupe(u8, session_id),
+            .agent_id = try app.allocator.dupe(u8, parsed.value.agent_id),
+            .user_id = if (parsed.value.user_id) |uid| try app.allocator.dupe(u8, uid) else null,
+            .created_at = timestamp,
+            .last_active = timestamp,
+            .conversation_turns = &[_][]const u8{}, // Empty initially
+            .session_summary = if (parsed.value.session_summary) |summary| try app.allocator.dupe(u8, summary) else null,
+            .preferences = parsed.value.preferences orelse std.json.Value{ .object = std.json.ObjectMap.init(app.allocator) },
+        };
+
+        // Save session to ArangoDB
+        app.arango_client.saveSession(new_session) catch |err| {
+            std.log.err("Error saving session: {s}", .{@errorName(err)});
+            // Clean up allocated memory
+            new_session.deinit(app.allocator);
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+
+        // Create response
+        const SessionCreateResponse = struct {
+            session_id: []const u8,
+            agent_id: []const u8,
+            user_id: ?[]const u8,
+            created_at: i64,
+        };
+
+        const response = SessionCreateResponse{
+            .session_id = new_session.session_id,
+            .agent_id = new_session.agent_id,
+            .user_id = new_session.user_id,
+            .created_at = new_session.created_at,
+        };
+
+        const json = utils.stringifyJson(app.allocator, response) catch |err| {
+            std.log.err("Error stringifying session create response: {s}", .{@errorName(err)});
+            new_session.deinit(app.allocator);
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+        defer app.allocator.free(json);
+
+        // Clean up session memory after response is serialized
+        new_session.deinit(app.allocator);
+
+        r.setStatus(.ok);
+        r.setHeader("content-type", "application/json") catch {};
+        r.sendBody(json) catch |err| {
+            std.log.err("Error sending session create response: {s}", .{@errorName(err)});
+        };
+        return;
+    }
+
+    if (std.mem.startsWith(u8, path, "/api/session/") and std.mem.endsWith(u8, path, "/preferences") and std.mem.eql(u8, method, "PUT")) {
+        // PUT /api/session/{session_id}/preferences - Update session preferences
+        const session_path = path["/api/session/".len..];
+        const preferences_suffix = "/preferences";
+
+        if (session_path.len <= preferences_suffix.len) {
+            r.setStatus(.bad_request);
+            r.sendBody("Invalid session ID") catch {};
+            return;
+        }
+
+        const session_id = session_path[0 .. session_path.len - preferences_suffix.len];
+        const body = r.body orelse return error.NoBody;
+
+        const PreferencesUpdateRequest = struct {
+            preferences: std.json.Value,
+        };
+
+        const parsed = utils.parseJson(PreferencesUpdateRequest, app.allocator, body) catch |err| {
+            std.log.err("Error parsing preferences update request: {s}", .{@errorName(err)});
+            r.setStatus(.bad_request);
+            r.sendBody("Bad Request") catch {};
+            return;
+        };
+        defer parsed.deinit();
+
+        // Update session preferences in ArangoDB
+        app.arango_client.updateSessionPreferences(session_id, parsed.value.preferences) catch |err| {
+            if (err == arango.ArangoError.DocumentNotFound) {
+                r.setStatus(.not_found);
+                r.sendBody("{\"error\":\"Session not found\"}") catch {};
+                return;
+            }
+            std.log.err("Error updating session preferences: {s}", .{@errorName(err)});
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+
+        r.setStatus(.ok);
+        r.setHeader("content-type", "application/json") catch {};
+        r.sendBody("{\"status\":\"preferences updated\"}") catch |err| {
+            std.log.err("Error sending preferences update response: {s}", .{@errorName(err)});
+        };
+        return;
+    }
+
     if (std.mem.eql(u8, path, "/api/health") and std.mem.eql(u8, method, "GET")) {
         r.setStatus(.ok);
         r.setHeader("content-type", "application/json") catch {};
@@ -580,21 +887,21 @@ fn handleRequest(r: zap.Request) !void {
     if (std.mem.eql(u8, path, "/api/conversation/save") and std.mem.eql(u8, method, "POST")) {
         const body = r.body orelse return error.NoBody;
 
-        const TurnJson = struct {
-            id: []const u8,
+        // ConversationTurn input format matching LLM Agent Integration Proposal
+        const ConversationTurnInput = struct {
+            id: ?[]const u8 = null, // Auto-generate if not provided
             session_id: []const u8,
-            turn_number: ?u32 = null,
-            timestamp: i64,
-            role: ?[]const u8 = null,
-            user_message: ?[]const u8 = null,
-            assistant_message: ?[]const u8 = null,
-            importance_score: ?f32 = null,
-            tags: ?[][]const u8 = null,
-            user_id: ?[]const u8 = null,
-            metadata: ?std.json.Value = null,
+            turn_number: ?u32 = null, // Auto-increment if not provided
+            timestamp: ?i64 = null, // Auto-generate if not provided
+            user_message: []const u8, // REQUIRED per proposal
+            assistant_message: []const u8, // REQUIRED per proposal
+            importance_score: ?f32 = null, // Default to 0.5 if not provided
+            tags: ?[][]const u8 = null, // Default to empty if not provided
+            user_id: ?[]const u8 = null, // Optional
+            metadata: ?std.json.Value = null, // Optional
         };
 
-        const parsed = utils.parseJson(TurnJson, app.allocator, body) catch |err| {
+        const parsed = utils.parseJson(ConversationTurnInput, app.allocator, body) catch |err| {
             std.log.err("Error parsing conversation turn: {s}", .{@errorName(err)});
             r.setStatus(.bad_request);
             r.sendBody("Bad Request") catch {};
@@ -602,16 +909,26 @@ fn handleRequest(r: zap.Request) !void {
         };
         defer parsed.deinit();
 
+        // Generate defaults for optional fields
+        const turn_id = parsed.value.id orelse blk: {
+            const timestamp = std.time.timestamp();
+            const hash = std.hash.Wyhash.hash(0, std.mem.asBytes(&timestamp));
+            break :blk try std.fmt.allocPrint(app.allocator, "turn_{d}_{x}", .{ timestamp, @as(u32, @truncate(hash)) });
+        };
+        defer if (parsed.value.id == null) app.allocator.free(turn_id);
+
+        const timestamp = parsed.value.timestamp orelse std.time.timestamp();
+        const importance_score = parsed.value.importance_score orelse 0.5;
+
+        // Handle tags - ensure we have a non-null array with proper type
+        const tags: ?[][]const u8 = if (parsed.value.tags) |input_tags| input_tags else null;
+
         // Build content for embedding (concat user/assistant messages)
         var content_builder = std.ArrayList(u8).init(app.allocator);
         defer content_builder.deinit();
-        if (parsed.value.user_message) |um| {
-            content_builder.appendSlice(um) catch {};
-            content_builder.appendSlice("\n") catch {};
-        }
-        if (parsed.value.assistant_message) |am| {
-            content_builder.appendSlice(am) catch {};
-        }
+        try content_builder.appendSlice(parsed.value.user_message);
+        try content_builder.appendSlice("\n");
+        try content_builder.appendSlice(parsed.value.assistant_message);
         const content = content_builder.toOwnedSlice() catch |err| {
             std.log.err("Alloc content failed: {s}", .{@errorName(err)});
             r.setStatus(.internal_server_error);
@@ -630,9 +947,9 @@ fn handleRequest(r: zap.Request) !void {
         };
 
         const document = reranker.Document{
-            .id = parsed.value.id,
+            .id = turn_id,
             .vector = vector,
-            .timestamp = parsed.value.timestamp,
+            .timestamp = timestamp,
             .content = content,
             .topic_id = null,
             .related_documents = null,
@@ -641,9 +958,9 @@ fn handleRequest(r: zap.Request) !void {
             .metadata = null,
             .session_id = parsed.value.session_id,
             .turn_number = parsed.value.turn_number,
-            .role = parsed.value.role,
-            .importance_score = parsed.value.importance_score,
-            .tags = parsed.value.tags,
+            .role = null, // Remove deprecated role field
+            .importance_score = importance_score,
+            .tags = tags,
         };
         // ownership of vector/content is moved into ingest
 
@@ -674,7 +991,7 @@ fn handleRequest(r: zap.Request) !void {
             if (ex2) |res2| {
                 // Persist items as context_extractions
                 for (res2.items) |item| {
-                    app.arango_client.persistExtraction(parsed.value.id, item.kind, item.value) catch |e| {
+                    app.arango_client.persistExtraction(turn_id, item.kind, item.value) catch |e| {
                         std.log.warn("persistExtraction failed: {s}", .{@errorName(e)});
                     };
                 }
@@ -682,7 +999,7 @@ fn handleRequest(r: zap.Request) !void {
             }
         }
 
-        const resp = std.fmt.allocPrint(app.allocator, "{{\"turn_id\":\"{s}\"}}", .{parsed.value.id}) catch {
+        const resp = std.fmt.allocPrint(app.allocator, "{{\"turn_id\":\"{s}\"}}", .{turn_id}) catch {
             r.setStatus(.ok);
             r.setHeader("content-type", "application/json") catch {};
             r.sendBody("{\"status\":\"ok\"}") catch {};

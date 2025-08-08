@@ -121,7 +121,12 @@ pub const QdrantClient = struct {
             const context_type_str = switch (context_types[0]) {
                 .preference => "preference",
                 .decision => "decision",
+                .fact => "fact",
+                .task => "task",
                 .observation => "observation",
+                .intent => "intent",
+                .emotion => "emotion",
+                .goal => "goal",
             };
             try filter_clauses.append(.{
                 .key = "context_type",
@@ -364,7 +369,12 @@ pub const QdrantClient = struct {
             context_type_str = switch (context_type) {
                 .preference => "preference",
                 .decision => "decision",
+                .fact => "fact",
+                .task => "task",
                 .observation => "observation",
+                .intent => "intent",
+                .emotion => "emotion",
+                .goal => "goal",
             };
         }
 

@@ -2,6 +2,15 @@ const std = @import("std");
 const utils = @import("utils.zig");
 const config = @import("config.zig");
 const reranker = @import("reranker.zig");
+const conversation = @import("conversation.zig");
+
+// ArangoDB specific errors
+pub const ArangoError = error{
+    DocumentNotFound,
+    DocumentConflict,
+    ConnectionFailed,
+    InvalidResponse,
+};
 
 pub const GraphContext = struct {
     neighbors: [][]const u8,
@@ -521,6 +530,105 @@ pub const ArangoClient = struct {
         defer self.allocator.free(resp);
 
         try self.createEdgeCustom("conversation_turns", turn_id, "context_extractions", key, "EXTRACTS_TO", 1.0, "edges");
+    }
+
+    // Session management methods per LLM Agent Integration Proposal
+
+    pub fn saveSession(self: *Self, session: conversation.AgentSession) !void {
+        // Create session document for ArangoDB
+        const SessionDoc = struct {
+            _key: []const u8,
+            session_id: []const u8,
+            agent_id: []const u8,
+            user_id: ?[]const u8,
+            created_at: i64,
+            last_active: i64,
+            conversation_turns: []const []const u8,
+            session_summary: ?[]const u8,
+            preferences: std.json.Value,
+        };
+
+        const doc = SessionDoc{
+            ._key = session.session_id,
+            .session_id = session.session_id,
+            .agent_id = session.agent_id,
+            .user_id = session.user_id,
+            .created_at = session.created_at,
+            .last_active = session.last_active,
+            .conversation_turns = session.conversation_turns,
+            .session_summary = session.session_summary,
+            .preferences = session.preferences,
+        };
+
+        const json_body = try utils.stringifyJson(self.allocator, doc);
+        defer self.allocator.free(json_body);
+
+        const url = try std.fmt.allocPrint(self.allocator, "http://{s}:{d}/_db/{s}/_api/document/agent_sessions", .{ self.config.host, self.config.port, self.config.database });
+        defer self.allocator.free(url);
+
+        const resp = try self.makeRequest(.POST, url, json_body);
+        defer self.allocator.free(resp);
+    }
+
+    pub fn getSessionJson(self: *Self, session_id: []const u8) ![]u8 {
+        const url = try std.fmt.allocPrint(self.allocator, "http://{s}:{d}/_db/{s}/_api/document/agent_sessions/{s}", .{ self.config.host, self.config.port, self.config.database, session_id });
+        defer self.allocator.free(url);
+
+        const response_json = self.makeRequest(.GET, url, null) catch |err| {
+            if (err == error.HttpStatus404) {
+                return ArangoError.DocumentNotFound;
+            }
+            return err;
+        };
+
+        // Parse the response to extract just the document data (without _id, _rev, etc.)
+        const DocumentResponse = struct {
+            session_id: []const u8,
+            agent_id: []const u8,
+            user_id: ?[]const u8,
+            created_at: i64,
+            last_active: i64,
+            conversation_turns: []const []const u8,
+            session_summary: ?[]const u8,
+            preferences: std.json.Value,
+        };
+
+        const parsed = utils.parseJson(DocumentResponse, self.allocator, response_json) catch |err| {
+            self.allocator.free(response_json);
+            return err;
+        };
+        defer parsed.deinit();
+        self.allocator.free(response_json);
+
+        // Return clean JSON without ArangoDB metadata
+        const clean_json = try utils.stringifyJson(self.allocator, parsed.value);
+        return clean_json;
+    }
+
+    pub fn updateSessionPreferences(self: *Self, session_id: []const u8, new_preferences: std.json.Value) !void {
+        const UpdateDoc = struct {
+            preferences: std.json.Value,
+            last_active: i64,
+        };
+
+        const update_doc = UpdateDoc{
+            .preferences = new_preferences,
+            .last_active = std.time.timestamp(),
+        };
+
+        const json_body = try utils.stringifyJson(self.allocator, update_doc);
+        defer self.allocator.free(json_body);
+
+        const url = try std.fmt.allocPrint(self.allocator, "http://{s}:{d}/_db/{s}/_api/document/agent_sessions/{s}", .{ self.config.host, self.config.port, self.config.database, session_id });
+        defer self.allocator.free(url);
+
+        const resp = self.makeRequest(.PATCH, url, json_body) catch |err| {
+            if (err == error.HttpStatus404) {
+                return ArangoError.DocumentNotFound;
+            }
+            return err;
+        };
+        defer self.allocator.free(resp);
     }
 
     fn makeRequest(self: *Self, method: std.http.Method, url: []const u8, body: ?[]const u8) ![]u8 {

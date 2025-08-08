@@ -1,0 +1,10 @@
+{
+  "agent_id": "assistant_v1",
+  "user_id": "user_789",
+  "session_summary": "Initial session for Python data analysis help",
+  "preferences": {
+    "language": "python",
+    "verbosity": "detailed",
+    "preferred_libraries": ["pandas", "numpy", "scikit-learn"]
+  }
+}

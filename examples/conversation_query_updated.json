@@ -1,0 +1,8 @@
+{
+  "query_text": "programming preferences and data analysis tools",
+  "session_id": "session_456",
+  "user_id": "user_789",
+  "context_types": ["preference", "decision"],
+  "include_conversation_context": true,
+  "max_turns": 10
+}
