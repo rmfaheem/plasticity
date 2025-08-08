@@ -69,6 +69,30 @@ This directory contains example files demonstrating how to use the semantic sear
 ./zig-out/bin/semantic-search search examples/query_performance.json
 ```
 
+### Conversation APIs (server mode)
+
+Ensure the server is running (e.g., via docker-compose), then:
+
+```bash
+# Save a conversation turn
+curl -s -X POST http://localhost:8080/api/conversation/save \
+  -H 'content-type: application/json' \
+  --data-binary @examples/conversation_turn.json
+
+# Conversation-aware search
+curl -s -X POST http://localhost:8080/api/conversation/search \
+  -H 'content-type: application/json' \
+  --data-binary @examples/conversation_query.json
+
+# Session history
+curl -s http://localhost:8080/api/conversation/history/session_123
+
+# Related memories
+curl -s -X POST http://localhost:8080/api/conversation/related \
+  -H 'content-type: application/json' \
+  -d '{"current_context":"python data pipeline","limit":3,"session_id":"session_123"}'
+```
+
 ## Document Structure
 
 ### Required Fields

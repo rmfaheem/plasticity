@@ -188,6 +188,76 @@ Or batch (array):
                     </div>
                 </div>
             </div>
+
+            <div class="conversation-section">
+                <div class="ingest-card">
+                    <h2>Conversation</h2>
+                    <div class="tab-navigation">
+                        <button class="tab-btn active" data-tab="conv-tab">
+                            <i class="fas fa-comments"></i>
+                            Conversation
+                        </button>
+                        <button class="tab-btn" data-tab="history-tab">
+                            <i class="fas fa-clock"></i>
+                            History
+                        </button>
+                    </div>
+
+                    <div id="conv-tab" class="tab-content active">
+                        <div class="form-group">
+                            <label for="convSessionId">Session ID</label>
+                            <input type="text" id="convSessionId" placeholder="e.g., session_123">
+                        </div>
+                        <div class="form-group">
+                            <label for="convUserId">User ID</label>
+                            <input type="text" id="convUserId" placeholder="e.g., user_456">
+                        </div>
+                        <div class="form-group">
+                            <label for="convUserMessage">Your Message</label>
+                            <textarea id="convUserMessage" rows="3" placeholder="Type your message..."></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label><input type="checkbox" id="rememberTurn" checked> Remember this turn</label>
+                        </div>
+                        <div class="form-group">
+                            <label for="importanceScore">Importance</label>
+                            <input type="range" id="importanceScore" min="0" max="1" step="0.1" value="0.5">
+                        </div>
+                        <div class="form-group">
+                            <label for="tagsInput">Tags (comma-separated)</label>
+                            <input type="text" id="tagsInput" placeholder="e.g., preference, python">
+                        </div>
+                        <div class="json-actions">
+                            <button id="convSendBtn" class="btn btn-primary">
+                                <i class="fas fa-paper-plane"></i>
+                                Send
+                            </button>
+                            <button id="convGenerateBtn" class="btn btn-secondary">
+                                <i class="fas fa-robot"></i>
+                                Generate with LLM
+                            </button>
+                        </div>
+                        <div id="assistantReply" class="results-section" style="display:none;">
+                            <h3>Assistant Reply</h3>
+                            <div id="assistantReplyText" class="result-card"></div>
+                        </div>
+                    </div>
+
+                    <div id="history-tab" class="tab-content">
+                        <div class="form-group">
+                            <label for="historySessionId">Session ID</label>
+                            <input type="text" id="historySessionId" placeholder="e.g., session_123">
+                        </div>
+                        <div class="json-actions">
+                            <button id="loadHistoryBtn" class="btn btn-primary">
+                                <i class="fas fa-sync"></i>
+                                Load History
+                            </button>
+                        </div>
+                        <div id="historyList" class="results-list" style="margin-top:1rem;"></div>
+                    </div>
+                </div>
+            </div>
         </main>
 
         <footer class="footer">

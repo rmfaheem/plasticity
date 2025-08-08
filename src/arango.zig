@@ -105,8 +105,8 @@ pub const ArangoClient = struct {
         defer self.allocator.free(db_response);
 
         // Create collections
-        const collections = [_][]const u8{ "chunks", "edges", "users", "user_context" };
-        const collection_types = [_]u32{ 2, 3, 2, 3 }; // 2 = document, 3 = edge
+        const collections = [_][]const u8{ "chunks", "edges", "users", "user_context", "conversation_turns", "agent_sessions", "session_edges", "topics", "context_extractions" };
+        const collection_types = [_]u32{ 2, 3, 2, 3, 2, 2, 3, 2, 2 }; // 2 = document, 3 = edge
 
         for (collections, 0..) |collection_name, i| {
             const collection_url = try std.fmt.allocPrint(self.allocator, "http://{s}:{d}/_db/{s}/_api/collection", .{ self.config.host, self.config.port, self.config.database });
@@ -140,6 +140,7 @@ pub const ArangoClient = struct {
         }{
             .{ .collection = "chunks", .fields = &[_][]const u8{"timestamp"} },
             .{ .collection = "edges", .fields = &[_][]const u8{"type"} },
+            .{ .collection = "conversation_turns", .fields = &[_][]const u8{ "session_id", "turn_number", "timestamp" } },
         };
 
         for (indexes) |index| {
@@ -177,7 +178,7 @@ pub const ArangoClient = struct {
         //     try self.authenticate(); // This line is removed
         // }
 
-        const query = "FOR v, e IN 1..2 ANY @node_id edges, user_context RETURN { neighbor: v._key, weight: e.weight || 1.0, type: e.type }";
+        const query = "FOR v, e IN 1..2 ANY @node_id edges, user_context RETURN { neighbor: v._key, weight: (e.type==\"FOLLOWS_TURN\" ? 1.5 : (e.weight || 1.0)), type: e.type }";
 
         const QueryRequest = struct {
             query: []const u8,
@@ -231,38 +232,177 @@ pub const ArangoClient = struct {
         };
     }
 
+    pub fn incrementAccessCount(self: *Self, node_id: []const u8) !void {
+        // Increment access_count in chunks, then in conversation_turns (one will be a no-op if key not found)
+        const UpdateReq = struct { query: []const u8, bindVars: struct { id: []const u8 } };
+        const url = try std.fmt.allocPrint(self.allocator, "http://{s}:{d}/_db/{s}/_api/cursor", .{ self.config.host, self.config.port, self.config.database });
+        defer self.allocator.free(url);
+
+        const aql_chunks = "FOR d IN chunks FILTER d._key==@id UPDATE d WITH { access_count: (d.access_count || 0) + 1 } IN chunks";
+        const req_chunks = UpdateReq{ .query = aql_chunks, .bindVars = .{ .id = node_id } };
+        const body_chunks = try utils.stringifyJson(self.allocator, req_chunks);
+        defer self.allocator.free(body_chunks);
+        _ = self.makeRequest(.POST, url, body_chunks) catch {};
+
+        const aql_turns = "FOR d IN conversation_turns FILTER d._key==@id UPDATE d WITH { access_count: (d.access_count || 0) + 1 } IN conversation_turns";
+        const req_turns = UpdateReq{ .query = aql_turns, .bindVars = .{ .id = node_id } };
+        const body_turns = try utils.stringifyJson(self.allocator, req_turns);
+        defer self.allocator.free(body_turns);
+        _ = self.makeRequest(.POST, url, body_turns) catch {};
+    }
+
+    pub fn getConversationHistoryJson(self: *Self, session_id: []const u8, limit: ?u32) ![]u8 {
+        const QueryRequest = struct {
+            query: []const u8,
+            bindVars: struct {
+                sid: []const u8,
+                lim: u32,
+            },
+        };
+
+        const aql =
+            "FOR d IN conversation_turns " ++
+            "FILTER d.session_id == @sid " ++
+            "SORT d.turn_number ASC, d.timestamp ASC " ++
+            "LIMIT @lim " ++
+            "RETURN { id: d._key, session_id: d.session_id, turn_number: d.turn_number, timestamp: d.timestamp, role: d.role, content: d.content, user_id: d.user_id, importance_score: d.importance_score, tags: d.tags }";
+
+        const q = QueryRequest{
+            .query = aql,
+            .bindVars = .{ .sid = session_id, .lim = limit orelse 1000 },
+        };
+
+        const request_json = try utils.stringifyJson(self.allocator, q);
+        defer self.allocator.free(request_json);
+
+        const url = try std.fmt.allocPrint(self.allocator, "http://{s}:{d}/_db/{s}/_api/cursor", .{ self.config.host, self.config.port, self.config.database });
+        defer self.allocator.free(url);
+
+        const response_json = try self.makeRequest(.POST, url, request_json);
+        // We will parse only to extract `result`
+        const CursorResponse = struct { result: []std.json.Value };
+        const parsed = utils.parseJson(CursorResponse, self.allocator, response_json) catch |err| {
+            self.allocator.free(response_json);
+            return err;
+        };
+        defer parsed.deinit();
+        self.allocator.free(response_json);
+
+        // Stringify the result array to return as JSON
+        const out_json = try utils.stringifyJson(self.allocator, parsed.value.result);
+        return out_json;
+    }
+
     pub fn upsertNode(self: *Self, document: reranker.Document) !void {
         // if (self.auth_token == null) { // This line is removed
         //     try self.authenticate(); // This line is removed
         // }
 
-        // Create/update the document node
-        const NodeDocument = struct {
-            _key: []const u8,
-            timestamp: i64,
-            content: ?[]const u8,
-            topic_id: ?[]const u8,
-            user_id: ?[]const u8,
-            context_type: ?reranker.ContextType,
-        };
+        // If this is a conversation turn, store in conversation_turns; else in chunks
+        const is_conversation = document.session_id != null;
+        if (is_conversation) {
+            const TurnDoc = struct {
+                _key: []const u8,
+                session_id: []const u8,
+                turn_number: ?u32 = null,
+                timestamp: i64,
+                role: ?[]const u8 = null,
+                content: ?[]const u8 = null,
+                user_id: ?[]const u8 = null,
+                importance_score: ?f32 = null,
+                tags: ?[][]const u8 = null,
+            };
 
-        const node_doc = NodeDocument{
-            ._key = document.id,
-            .timestamp = document.timestamp,
-            .content = document.content,
-            .topic_id = document.topic_id,
-            .user_id = document.user_id,
-            .context_type = document.context_type,
-        };
+            const turn_doc = TurnDoc{
+                ._key = document.id,
+                .session_id = document.session_id.?,
+                .turn_number = document.turn_number,
+                .timestamp = document.timestamp,
+                .role = document.role,
+                .content = document.content,
+                .user_id = document.user_id,
+                .importance_score = document.importance_score,
+                .tags = document.tags,
+            };
+            const turn_json = try utils.stringifyJson(self.allocator, turn_doc);
+            defer self.allocator.free(turn_json);
+            const turn_url = try std.fmt.allocPrint(self.allocator, "http://{s}:{d}/_db/{s}/_api/document/conversation_turns", .{ self.config.host, self.config.port, self.config.database });
+            defer self.allocator.free(turn_url);
+            const turn_resp = try self.makeRequest(.POST, turn_url, turn_json);
+            defer self.allocator.free(turn_resp);
 
-        const node_json = try utils.stringifyJson(self.allocator, node_doc);
-        defer self.allocator.free(node_json);
+            // Ensure session node
+            const SessionDoc = struct { _key: []const u8 };
+            const session_doc = SessionDoc{ ._key = document.session_id.? };
+            const session_json = try utils.stringifyJson(self.allocator, session_doc);
+            defer self.allocator.free(session_json);
+            const session_url = try std.fmt.allocPrint(self.allocator, "http://{s}:{d}/_db/{s}/_api/document/agent_sessions", .{ self.config.host, self.config.port, self.config.database });
+            defer self.allocator.free(session_url);
+            const session_resp = try self.makeRequest(.POST, session_url, session_json);
+            defer self.allocator.free(session_resp);
 
-        const url = try std.fmt.allocPrint(self.allocator, "http://{s}:{d}/_db/{s}/_api/document/chunks", .{ self.config.host, self.config.port, self.config.database });
-        defer self.allocator.free(url);
+            // PART_OF_SESSION edge (turn -> session)
+            try self.createEdgeCustom("conversation_turns", document.id, "agent_sessions", document.session_id.?, "PART_OF_SESSION", 1.0, "session_edges");
 
-        const response_json = try self.makeRequest(.POST, url, node_json);
-        defer self.allocator.free(response_json);
+            // FOLLOWS_TURN edge if previous exists
+            if (document.turn_number) |tn| {
+                if (tn > 1) {
+                    const prev_id = try std.fmt.allocPrint(self.allocator, "{s}_turn_{d}", .{ document.session_id.?, tn - 1 });
+                    defer self.allocator.free(prev_id);
+                    try self.createEdgeCustom("conversation_turns", prev_id, "conversation_turns", document.id, "FOLLOWS_TURN", 1.0, "session_edges");
+                }
+            }
+
+            // USER_OF_SESSION edge
+            if (document.user_id) |uid| {
+                try self.ensureUserNode(uid);
+                try self.createEdgeCustom("users", uid, "agent_sessions", document.session_id.?, "USER_OF_SESSION", 1.0, "session_edges");
+            }
+
+            // HAS_TOPIC edges from tags (create topic docs)
+            if (document.tags) |ts| {
+                for (ts) |tag| {
+                    const topic_doc = struct { _key: []const u8 }{ ._key = tag };
+                    const topic_json = try utils.stringifyJson(self.allocator, topic_doc);
+                    defer self.allocator.free(topic_json);
+                    const topic_url = try std.fmt.allocPrint(self.allocator, "http://{s}:{d}/_db/{s}/_api/document/topics", .{ self.config.host, self.config.port, self.config.database });
+                    defer self.allocator.free(topic_url);
+                    const topic_resp = try self.makeRequest(.POST, topic_url, topic_json);
+                    defer self.allocator.free(topic_resp);
+                    try self.createEdgeCustom("conversation_turns", document.id, "topics", tag, "HAS_TOPIC", 1.0, "edges");
+                }
+            }
+
+            // Future: persist extraction artifacts here (context_extractions + EXTRACTS_TO)
+        } else {
+            // Create/update the document node in chunks
+            const NodeDocument = struct {
+                _key: []const u8,
+                timestamp: i64,
+                content: ?[]const u8,
+                topic_id: ?[]const u8,
+                user_id: ?[]const u8,
+                context_type: ?reranker.ContextType,
+            };
+
+            const node_doc = NodeDocument{
+                ._key = document.id,
+                .timestamp = document.timestamp,
+                .content = document.content,
+                .topic_id = document.topic_id,
+                .user_id = document.user_id,
+                .context_type = document.context_type,
+            };
+
+            const node_json = try utils.stringifyJson(self.allocator, node_doc);
+            defer self.allocator.free(node_json);
+
+            const url = try std.fmt.allocPrint(self.allocator, "http://{s}:{d}/_db/{s}/_api/document/chunks", .{ self.config.host, self.config.port, self.config.database });
+            defer self.allocator.free(url);
+
+            const response_json = try self.makeRequest(.POST, url, node_json);
+            defer self.allocator.free(response_json);
+        }
 
         // Create user and user-context relationship if specified
         if (document.user_id) |user_id| {
@@ -331,6 +471,56 @@ pub const ArangoClient = struct {
 
         const response_json = try self.makeRequest(.POST, url, edge_json);
         defer self.allocator.free(response_json);
+    }
+
+    fn createEdgeCustom(self: *Self, from_collection: []const u8, from_id: []const u8, to_collection: []const u8, to_id: []const u8, edge_type: []const u8, weight: f32, collection: []const u8) !void {
+        const EdgeDocument = struct {
+            _from: []const u8,
+            _to: []const u8,
+            type: []const u8,
+            weight: f32,
+        };
+
+        const from_full = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ from_collection, from_id });
+        defer self.allocator.free(from_full);
+        const to_full = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ to_collection, to_id });
+        defer self.allocator.free(to_full);
+
+        const edge_doc = EdgeDocument{ ._from = from_full, ._to = to_full, .type = edge_type, .weight = weight };
+        const edge_json = try utils.stringifyJson(self.allocator, edge_doc);
+        defer self.allocator.free(edge_json);
+        const url = try std.fmt.allocPrint(self.allocator, "http://{s}:{d}/_db/{s}/_api/document/{s}", .{ self.config.host, self.config.port, self.config.database, collection });
+        defer self.allocator.free(url);
+        const response_json = try self.makeRequest(.POST, url, edge_json);
+        defer self.allocator.free(response_json);
+    }
+
+    pub fn persistExtraction(self: *Self, turn_id: []const u8, kind: []const u8, value: []const u8) !void {
+        const ExtractionDoc = struct {
+            _key: []const u8,
+            kind: []const u8,
+            value: []const u8,
+        };
+
+        // Build stable key from turn_id + kind + hash(value)
+        const key_base = try std.fmt.allocPrint(self.allocator, "{s}:{s}:", .{ turn_id, kind });
+        defer self.allocator.free(key_base);
+        var hasher = std.hash.Fnv1a_64.init();
+        hasher.update(value);
+        const hash_val = hasher.final();
+        const key = try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ key_base, hash_val });
+        defer self.allocator.free(key);
+
+        const doc = ExtractionDoc{ ._key = key, .kind = kind, .value = value };
+        const json_body = try utils.stringifyJson(self.allocator, doc);
+        defer self.allocator.free(json_body);
+
+        const url = try std.fmt.allocPrint(self.allocator, "http://{s}:{d}/_db/{s}/_api/document/context_extractions", .{ self.config.host, self.config.port, self.config.database });
+        defer self.allocator.free(url);
+        const resp = try self.makeRequest(.POST, url, json_body);
+        defer self.allocator.free(resp);
+
+        try self.createEdgeCustom("conversation_turns", turn_id, "context_extractions", key, "EXTRACTS_TO", 1.0, "edges");
     }
 
     fn makeRequest(self: *Self, method: std.http.Method, url: []const u8, body: ?[]const u8) ![]u8 {

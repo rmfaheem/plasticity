@@ -106,6 +106,14 @@ pub const QdrantClient = struct {
             });
         }
 
+        // Add session filter
+        if (query.session_id) |session_id| {
+            try filter_clauses.append(.{
+                .key = "session_id",
+                .match = .{ .value = session_id },
+            });
+        }
+
         // Add context_types filter
         if (query.context_types) |context_types| {
             // For now, just use the first context type
@@ -121,6 +129,16 @@ pub const QdrantClient = struct {
                     .value = context_type_str,
                 },
             });
+        }
+
+        // Add tags filter (first tag only for now)
+        if (query.tags) |tags| {
+            if (tags.len > 0) {
+                try filter_clauses.append(.{
+                    .key = "tags",
+                    .match = .{ .value = tags[0] },
+                });
+            }
         }
 
         if (filter_clauses.items.len > 0) {
@@ -161,6 +179,7 @@ pub const QdrantClient = struct {
                     topic_id: ?[]const u8 = null,
                     user_id: ?[]const u8 = null,
                     context_type: ?[]const u8 = null,
+                    importance_score: ?f32 = null,
                     metadata: ?std.json.Value = null,
                 } = null,
             },
@@ -206,6 +225,7 @@ pub const QdrantClient = struct {
                         null
                 else
                     null,
+                .importance = if (item.payload) |payload| payload.importance_score orelse 0.0 else 0.0,
             };
             std.log.info("Successfully processed result {d}", .{i});
         }
@@ -222,6 +242,17 @@ pub const QdrantClient = struct {
                 size: u32,
                 distance: []const u8,
             },
+            payload_schema: struct {
+                timestamp: struct { data_type: []const u8 },
+                topic_id: struct { data_type: []const u8 },
+                user_id: struct { data_type: []const u8 },
+                context_type: struct { data_type: []const u8 },
+                session_id: struct { data_type: []const u8 },
+                turn_number: struct { data_type: []const u8 },
+                role: struct { data_type: []const u8 },
+                importance_score: struct { data_type: []const u8 },
+                tags: struct { data_type: []const u8 },
+            },
             optimizers_config: struct {
                 default_segment_number: u32,
             },
@@ -235,6 +266,17 @@ pub const QdrantClient = struct {
             .vectors = .{
                 .size = 8,
                 .distance = "Cosine",
+            },
+            .payload_schema = .{
+                .timestamp = .{ .data_type = "integer" },
+                .topic_id = .{ .data_type = "keyword" },
+                .user_id = .{ .data_type = "keyword" },
+                .context_type = .{ .data_type = "keyword" },
+                .session_id = .{ .data_type = "keyword" },
+                .turn_number = .{ .data_type = "integer" },
+                .role = .{ .data_type = "keyword" },
+                .importance_score = .{ .data_type = "float" },
+                .tags = .{ .data_type = "keyword" },
             },
             .optimizers_config = .{
                 .default_segment_number = 2,
@@ -304,6 +346,11 @@ pub const QdrantClient = struct {
                 user_id: ?[]const u8 = null,
                 context_type: ?[]const u8 = null,
                 metadata: ?std.json.Value = null,
+                session_id: ?[]const u8 = null,
+                turn_number: ?u32 = null,
+                role: ?[]const u8 = null,
+                importance_score: ?f32 = null,
+                tags: ?[][]const u8 = null,
             },
         };
 
@@ -332,6 +379,11 @@ pub const QdrantClient = struct {
                 .user_id = document.user_id,
                 .context_type = context_type_str,
                 .metadata = metadata_json,
+                .session_id = document.session_id,
+                .turn_number = document.turn_number,
+                .role = document.role,
+                .importance_score = document.importance_score,
+                .tags = document.tags,
             },
         }};
 

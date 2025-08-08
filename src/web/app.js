@@ -64,6 +64,14 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Load batch example
     document.getElementById('loadBatchExampleBtn').addEventListener('click', loadBatchExample);
+
+    // Conversation tab actions
+    const convSendBtn = document.getElementById('convSendBtn');
+    if (convSendBtn) convSendBtn.addEventListener('click', saveConversationTurn);
+    const convGenerateBtn = document.getElementById('convGenerateBtn');
+    if (convGenerateBtn) convGenerateBtn.addEventListener('click', generateAssistantAndSave);
+    const loadHistoryBtn = document.getElementById('loadHistoryBtn');
+    if (loadHistoryBtn) loadHistoryBtn.addEventListener('click', loadConversationHistory);
 });
 
 // JSON validation function
@@ -339,6 +347,134 @@ function displayResults(results) {
     }
 
     document.getElementById('searchResults').style.display = 'block';
+}
+
+async function saveConversationTurn() {
+    const sessionId = document.getElementById('convSessionId').value.trim() || `session_${Date.now()}`;
+    const userId = document.getElementById('convUserId').value.trim() || null;
+    const userMessage = document.getElementById('convUserMessage').value.trim();
+    const remember = document.getElementById('rememberTurn').checked;
+    const importance = parseFloat(document.getElementById('importanceScore').value);
+    const tagsStr = document.getElementById('tagsInput').value.trim();
+    const tags = tagsStr ? tagsStr.split(',').map(t => t.trim()).filter(Boolean) : null;
+
+    if (!userMessage) {
+        showNotification('Please enter a message', true);
+        return;
+    }
+
+    showLoading();
+    try {
+        const turnId = `turn_${Date.now()}`;
+        const payload = {
+            id: turnId,
+            session_id: sessionId,
+            timestamp: Math.floor(Date.now() / 1000),
+            user_message: userMessage,
+            assistant_message: null,
+            importance_score: remember ? importance : 0.0,
+            tags: remember ? tags : null,
+            user_id: userId,
+        };
+        const resp = await fetch('/api/conversation/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!resp.ok) throw new Error('Save failed');
+        showNotification('Turn saved');
+    } catch (e) {
+        showNotification('Error saving turn: ' + e.message, true);
+    } finally {
+        hideLoading();
+    }
+}
+
+async function generateAssistantAndSave() {
+    const sessionId = document.getElementById('convSessionId').value.trim() || `session_${Date.now()}`;
+    const userId = document.getElementById('convUserId').value.trim() || null;
+    const userMessage = document.getElementById('convUserMessage').value.trim();
+    const remember = document.getElementById('rememberTurn').checked;
+    const importance = parseFloat(document.getElementById('importanceScore').value);
+    const tagsStr = document.getElementById('tagsInput').value.trim();
+    const tags = tagsStr ? tagsStr.split(',').map(t => t.trim()).filter(Boolean) : null;
+
+    if (!userMessage) {
+        showNotification('Please enter a message', true);
+        return;
+    }
+
+    showLoading();
+    try {
+        // Generate assistant reply
+        const genResp = await fetch('/api/llm/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt: userMessage })
+        });
+        if (!genResp.ok) throw new Error('LLM not available');
+        const genJson = await genResp.json();
+        const assistant = genJson.completion || '';
+        document.getElementById('assistantReplyText').textContent = assistant;
+        document.getElementById('assistantReply').style.display = 'block';
+
+        // Save combined turn
+        const turnId = `turn_${Date.now()}`;
+        const payload = {
+            id: turnId,
+            session_id: sessionId,
+            timestamp: Math.floor(Date.now() / 1000),
+            user_message: userMessage,
+            assistant_message: assistant,
+            importance_score: remember ? importance : 0.0,
+            tags: remember ? tags : null,
+            user_id: userId,
+        };
+        const resp = await fetch('/api/conversation/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!resp.ok) throw new Error('Save failed');
+        showNotification('Assistant generated and turn saved');
+    } catch (e) {
+        showNotification('Error generating/saving: ' + e.message, true);
+    } finally {
+        hideLoading();
+    }
+}
+
+async function loadConversationHistory() {
+    const sessionId = document.getElementById('historySessionId').value.trim();
+    if (!sessionId) {
+        showNotification('Enter session id', true);
+        return;
+    }
+    showLoading();
+    try {
+        const resp = await fetch(`/api/conversation/history/${encodeURIComponent(sessionId)}`);
+        if (!resp.ok) throw new Error('Failed to load history');
+        const history = await resp.json();
+        const list = document.getElementById('historyList');
+        list.innerHTML = '';
+        (history.turns || history || []).forEach(turn => {
+            const card = document.createElement('div');
+            card.className = 'result-card';
+            const role = turn.role || (turn.user_message ? 'user' : 'assistant');
+            card.innerHTML = `
+                <div class="result-header">
+                    <span>${role}</span>
+                    <span>${new Date((turn.timestamp||0) * 1000).toLocaleString()}</span>
+                </div>
+                <div class="result-content">${(turn.content) || (turn.user_message || '') + (turn.assistant_message ? ('\n' + turn.assistant_message) : '')}</div>
+            `;
+            list.appendChild(card);
+        });
+    } catch (e) {
+        showNotification('Error loading history: ' + e.message, true);
+    } finally {
+        hideLoading();
+    }
 }
 
 // Ingest functionality

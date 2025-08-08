@@ -13,7 +13,6 @@ pub const ContextType = enum {
     observation,
 };
 
-
 pub const SearchQuery = struct {
     vector: []const f32,
     limit: ?u32 = null,
@@ -22,6 +21,8 @@ pub const SearchQuery = struct {
     source_node_id: ?[]const u8 = null,
     user_id: ?[]const u8 = null,
     context_types: ?[]const ContextType = null,
+    session_id: ?[]const u8 = null,
+    tags: ?[][]const u8 = null,
 
     pub fn deinit(self: *const SearchQuery, allocator: std.mem.Allocator) void {
         allocator.free(self.vector);
@@ -33,6 +34,11 @@ pub const SearchQuery = struct {
         }
         if (self.user_id) |user| allocator.free(user);
         if (self.context_types) |types| allocator.free(types);
+        if (self.session_id) |sid| allocator.free(sid);
+        if (self.tags) |ts| {
+            for (ts) |t| allocator.free(t);
+            allocator.free(ts);
+        }
     }
 };
 
@@ -41,6 +47,8 @@ pub const VectorResult = struct {
     score: f32,
     timestamp: i64,
     content: ?[]const u8 = null,
+    importance: f32 = 0.0,
+    behavior: f32 = 0.0,
 
     pub fn deinit(self: *const VectorResult, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -59,6 +67,8 @@ pub const SearchResult = struct {
     similarity_score: f32,
     recency_score: f32,
     graph_score: f32,
+    importance_score: f32,
+    behavior_score: f32,
 
     pub fn deinit(self: *const SearchResult, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -92,6 +102,12 @@ pub const Document = struct {
     user_id: ?[]const u8 = null,
     context_type: ?ContextType = null,
     metadata: ?std.StringHashMap([]const u8) = null,
+    // Conversation-specific (optional)
+    session_id: ?[]const u8 = null,
+    turn_number: ?u32 = null,
+    role: ?[]const u8 = null,
+    importance_score: ?f32 = null,
+    tags: ?[][]const u8 = null,
 
     pub fn deinit(self: *const Document, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -112,6 +128,12 @@ pub const Document = struct {
         if (self.metadata) |*meta| {
             deinitMetadata(meta, allocator);
         }
+        if (self.session_id) |sid| allocator.free(sid);
+        if (self.role) |r| allocator.free(r);
+        if (self.tags) |ts| {
+            for (ts) |t| allocator.free(t);
+            allocator.free(ts);
+        }
     }
 
     pub fn fromJson(allocator: std.mem.Allocator, json_doc: DocumentJson) !Document {
@@ -122,10 +144,7 @@ pub const Document = struct {
                 var it = json_meta.object.iterator();
                 while (it.next()) |entry| {
                     if (entry.value_ptr.* == .string) {
-                        try metadata.?.put(
-                            try allocator.dupe(u8, entry.key_ptr.*),
-                            try allocator.dupe(u8, entry.value_ptr.*.string)
-                        );
+                        try metadata.?.put(try allocator.dupe(u8, entry.key_ptr.*), try allocator.dupe(u8, entry.value_ptr.*.string));
                     }
                 }
             }
@@ -147,6 +166,11 @@ pub const Document = struct {
             .user_id = if (json_doc.user_id) |user| try allocator.dupe(u8, user) else null,
             .context_type = json_doc.context_type,
             .metadata = metadata,
+            .session_id = null,
+            .turn_number = null,
+            .role = null,
+            .importance_score = null,
+            .tags = null,
         };
     }
 };
@@ -197,7 +221,9 @@ pub fn rerank(
 
         const final_score = app_config.ranking.similarity_weight * similarity_score +
             app_config.ranking.recency_weight * recency_score +
-            app_config.ranking.graph_weight * graph_score;
+            app_config.ranking.graph_weight * graph_score +
+            app_config.ranking.importance_weight * result.importance +
+            app_config.ranking.behavior_weight * result.behavior;
 
         var neighbors = try allocator.alloc([]const u8, graph_context.neighbors.len);
         for (graph_context.neighbors, 0..) |neighbor, j| {
@@ -213,6 +239,8 @@ pub fn rerank(
             .similarity_score = similarity_score,
             .recency_score = recency_score,
             .graph_score = graph_score,
+            .importance_score = result.importance,
+            .behavior_score = result.behavior,
         };
     }
 
@@ -222,4 +250,94 @@ pub fn rerank(
 
 fn compareSearchResults(_: void, a: SearchResult, b: SearchResult) bool {
     return a.score > b.score;
+}
+
+test "rerank importance affects order" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var ctx_map = std.HashMap([]const u8, arango.GraphContext, std.hash_map.StringContext, std.hash_map.default_max_load_percentage).init(allocator);
+    defer {
+        var it = ctx_map.iterator();
+        while (it.next()) |e| e.value_ptr.deinit(allocator);
+        ctx_map.deinit();
+    }
+
+    const now: i64 = 1_700_000_000;
+    var results = try allocator.alloc(VectorResult, 2);
+    defer allocator.free(results);
+    results[0] = .{ .id = try allocator.dupe(u8, "a"), .score = 0.8, .timestamp = now, .importance = 0.1 };
+    results[1] = .{ .id = try allocator.dupe(u8, "b"), .score = 0.8, .timestamp = now, .importance = 0.9 };
+
+    const cfg = config.Config{
+        .qdrant = .{ .host = "h", .port = 0, .collection_name = "c" },
+        .arango = .{ .host = "h", .port = 0, .database = "d", .username = "u", .password = "p" },
+        .ranking = .{ .similarity_weight = 0.0, .recency_weight = 0.0, .graph_weight = 0.0, .recency_decay_factor = 0.1, .importance_weight = 1.0, .behavior_weight = 0.0 },
+        .server = .{},
+        .persistent_memory = .{},
+        .conversation_memory = .{},
+        .embedding = .{},
+    };
+
+    const ranked = try rerank(allocator, results, &ctx_map, cfg);
+    defer {
+        for (ranked) |r| r.deinit(allocator);
+        allocator.free(ranked);
+    }
+    allocator.free(results[0].id);
+    allocator.free(results[1].id);
+    try std.testing.expect(std.mem.eql(u8, ranked[0].id, "b"));
+}
+
+test "rerank graph weight affects order" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var ctx_map = std.HashMap([]const u8, arango.GraphContext, std.hash_map.StringContext, std.hash_map.default_max_load_percentage).init(allocator);
+    defer {
+        var it = ctx_map.iterator();
+        while (it.next()) |e| e.value_ptr.deinit(allocator);
+        ctx_map.deinit();
+    }
+
+    const now: i64 = 1_700_000_000;
+    var results = try allocator.alloc(VectorResult, 2);
+    defer allocator.free(results);
+    results[0] = .{ .id = try allocator.dupe(u8, "a"), .score = 0.5, .timestamp = now };
+    results[1] = .{ .id = try allocator.dupe(u8, "b"), .score = 0.5, .timestamp = now };
+
+    var neigh_a = try allocator.alloc([]const u8, 1);
+    neigh_a[0] = try allocator.dupe(u8, "n1");
+    var weights_a = try allocator.alloc(f32, 1);
+    weights_a[0] = 0.1;
+    const ctx_a = arango.GraphContext{ .neighbors = neigh_a, .weights = weights_a, .topics = &[_][]const u8{} };
+    try ctx_map.put(results[0].id, ctx_a);
+
+    var neigh_b = try allocator.alloc([]const u8, 1);
+    neigh_b[0] = try allocator.dupe(u8, "n2");
+    var weights_b = try allocator.alloc(f32, 1);
+    weights_b[0] = 1.0;
+    const ctx_b = arango.GraphContext{ .neighbors = neigh_b, .weights = weights_b, .topics = &[_][]const u8{} };
+    try ctx_map.put(results[1].id, ctx_b);
+
+    const cfg = config.Config{
+        .qdrant = .{ .host = "h", .port = 0, .collection_name = "c" },
+        .arango = .{ .host = "h", .port = 0, .database = "d", .username = "u", .password = "p" },
+        .ranking = .{ .similarity_weight = 0.0, .recency_weight = 0.0, .graph_weight = 1.0, .recency_decay_factor = 0.1, .importance_weight = 0.0, .behavior_weight = 0.0 },
+        .server = .{},
+        .persistent_memory = .{},
+        .conversation_memory = .{},
+        .embedding = .{},
+    };
+
+    const ranked = try rerank(allocator, results, &ctx_map, cfg);
+    defer {
+        for (ranked) |r| r.deinit(allocator);
+        allocator.free(ranked);
+    }
+    allocator.free(results[0].id);
+    allocator.free(results[1].id);
+    try std.testing.expect(std.mem.eql(u8, ranked[0].id, "b"));
 }

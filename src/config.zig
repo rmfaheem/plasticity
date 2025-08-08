@@ -1,6 +1,7 @@
 const std = @import("std");
 const utils = @import("utils.zig");
 const embedding = @import("embedding.zig");
+const llm = @import("llm.zig");
 
 pub const QdrantConfig = struct {
     host: []const u8,
@@ -37,6 +38,8 @@ pub const RankingConfig = struct {
     recency_weight: f32 = 0.3,
     graph_weight: f32 = 0.2,
     recency_decay_factor: f32 = 0.1,
+    importance_weight: f32 = 0.1,
+    behavior_weight: f32 = 0.0,
 };
 
 pub const ServerConfig = struct {
@@ -49,13 +52,22 @@ pub const PersistentMemoryConfig = struct {
     max_context_size: u64 = 1048576,
 };
 
+pub const ConversationMemoryConfig = struct {
+    auto_extract_context: bool = true,
+    context_extraction_threshold: f32 = 0.7,
+    session_timeout_hours: u64 = 24,
+    max_turns_per_session: u32 = 1000,
+};
+
 pub const Config = struct {
     qdrant: QdrantConfig,
     arango: ArangoConfig,
     ranking: RankingConfig = .{},
     server: ServerConfig = .{},
     persistent_memory: PersistentMemoryConfig = .{},
+    conversation_memory: ConversationMemoryConfig = .{},
     embedding: embedding.EmbeddingConfig = .{},
+    llm: llm.LLMConfig = .{},
 
     pub fn deinit(self: *const Config, allocator: std.mem.Allocator) void {
         self.qdrant.deinit(allocator);
@@ -101,7 +113,9 @@ pub fn loadConfig(allocator: std.mem.Allocator, path: []const u8) !Config {
         .ranking = parsed.value.ranking,
         .server = parsed.value.server,
         .persistent_memory = parsed.value.persistent_memory,
+        .conversation_memory = parsed.value.conversation_memory,
         .embedding = parsed.value.embedding,
+        .llm = parsed.value.llm,
     };
 
     return result;

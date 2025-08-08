@@ -6,6 +6,9 @@ const arango = @import("arango.zig");
 const reranker = @import("reranker.zig");
 const utils = @import("utils.zig");
 const embedding = @import("embedding.zig");
+const conversation = @import("conversation.zig");
+const extract = @import("extract.zig");
+const llm = @import("llm.zig");
 
 var global_app: *SemanticSearchApp = undefined;
 
@@ -95,6 +98,10 @@ const SemanticSearchApp = struct {
         for (vector_results) |result| {
             const context = try self.arango_client.getGraphContext(result.id);
             try graph_context.put(result.id, context);
+            // Increment behavior counter for access
+            self.arango_client.incrementAccessCount(result.id) catch |e| {
+                std.log.warn("incrementAccessCount failed for {s}: {s}", .{ result.id, @errorName(e) });
+            };
         }
 
         // Step 3: Re-rank results
@@ -149,6 +156,48 @@ fn handleRequest(r: zap.Request) !void {
     const app = global_app;
     const path = r.path orelse return error.NoPath;
     const method = r.method orelse return error.NoMethod;
+
+    if (std.mem.eql(u8, path, "/api/llm/generate") and std.mem.eql(u8, method, "POST")) {
+        const app2 = app;
+        const body = r.body orelse return error.NoBody;
+
+        const LlmRequest = struct {
+            prompt: []const u8,
+            system: ?[]const u8 = null,
+            model: ?[]const u8 = null,
+            temperature: ?f32 = null,
+        };
+
+        const parsed = utils.parseJson(LlmRequest, app2.allocator, body) catch |err| {
+            std.log.err("Error parsing LLM request: {s}", .{@errorName(err)});
+            r.setStatus(.bad_request);
+            r.sendBody("Bad Request") catch {};
+            return;
+        };
+        defer parsed.deinit();
+
+        var service = llm.LLMService.init(app2.allocator, app2.config.llm);
+        defer service.deinit();
+        const completion = service.generateCompletion(parsed.value.prompt, parsed.value.system, parsed.value.model, parsed.value.temperature) catch |e| {
+            std.log.err("LLM generate failed: {s}", .{@errorName(e)});
+            r.setStatus(.bad_request);
+            r.sendBody("LLM disabled or failed") catch {};
+            return;
+        };
+        defer app2.allocator.free(completion);
+
+        const resp = std.fmt.allocPrint(app2.allocator, "{{\"completion\": {s}}}", .{try utils.stringifyJson(app2.allocator, completion)}) catch {
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+        defer app2.allocator.free(resp);
+        r.setStatus(.ok);
+        r.setHeader("content-type", "application/json") catch {};
+        r.sendBody(resp) catch {};
+        return;
+    }
+    // path/method already extracted above
 
     if (std.mem.eql(u8, path, "/")) {
         serveFile(r, "src/web/index.html", "text/html") catch |err| {
@@ -280,6 +329,165 @@ fn handleRequest(r: zap.Request) !void {
         return;
     }
 
+    if (std.mem.eql(u8, path, "/api/conversation/search") and std.mem.eql(u8, method, "POST")) {
+        const app2 = global_app;
+        const body = r.body orelse return error.NoBody;
+
+        const ConversationSearchRequest = struct {
+            query_text: []const u8,
+            limit: ?u32 = null,
+            session_id: ?[]const u8 = null,
+            user_id: ?[]const u8 = null,
+            context_types: ?[][]const u8 = null,
+            time_range: ?struct { start: i64, end: i64 } = null,
+            tags: ?[][]const u8 = null,
+        };
+
+        const parsed = utils.parseJson(ConversationSearchRequest, app2.allocator, body) catch |err| {
+            std.log.err("Error parsing conversation search: {s}", .{@errorName(err)});
+            r.setStatus(.bad_request);
+            r.sendBody("Bad Request") catch {};
+            return;
+        };
+        defer parsed.deinit();
+
+        // Embed query text
+        var embedding_service = embedding.EmbeddingService.init(app2.allocator, app2.config.embedding);
+        defer embedding_service.deinit();
+        const vector = embedding_service.textToVector(parsed.value.query_text) catch |err| {
+            std.log.err("Embedding failed: {s}", .{@errorName(err)});
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+
+        // Convert context types
+        var context_types: ?[]reranker.ContextType = null;
+        if (parsed.value.context_types) |context_strings| {
+            context_types = app2.allocator.alloc(reranker.ContextType, context_strings.len) catch {
+                r.setStatus(.internal_server_error);
+                r.sendBody("Internal Server Error") catch {};
+                return;
+            };
+            for (context_strings, 0..) |context_str, i| {
+                context_types.?[i] = if (std.mem.eql(u8, context_str, "preference"))
+                    .preference
+                else if (std.mem.eql(u8, context_str, "decision"))
+                    .decision
+                else if (std.mem.eql(u8, context_str, "observation"))
+                    .observation
+                else
+                    .observation;
+            }
+        }
+
+        const search_query = reranker.SearchQuery{
+            .vector = vector,
+            .limit = parsed.value.limit,
+            .time_range = if (parsed.value.time_range) |tr| reranker.TimeRange{ .start = tr.start, .end = tr.end } else null,
+            .topic_id = null,
+            .source_node_id = null,
+            .user_id = parsed.value.user_id,
+            .context_types = context_types,
+            .session_id = parsed.value.session_id,
+            .tags = parsed.value.tags,
+        };
+
+        const results = app2.search(search_query) catch |err| {
+            std.log.err("Error searching: {s}", .{@errorName(err)});
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+        defer {
+            for (results) |*result| result.deinit(app2.allocator);
+            app2.allocator.free(results);
+        }
+
+        const json = utils.stringifyJson(app2.allocator, results) catch {
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+        defer app2.allocator.free(json);
+
+        r.setStatus(.ok);
+        r.setHeader("content-type", "application/json") catch {};
+        r.sendBody(json) catch {};
+        return;
+    }
+
+    if (std.mem.startsWith(u8, path, "/api/conversation/history/") and std.mem.eql(u8, method, "GET")) {
+        const app2 = global_app;
+        const session_id = path["/api/conversation/history/".len..];
+        const json = app2.arango_client.getConversationHistoryJson(session_id, null) catch |err| {
+            std.log.err("Error fetching history: {s}", .{@errorName(err)});
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+        defer app2.allocator.free(json);
+        r.setStatus(.ok);
+        r.setHeader("content-type", "application/json") catch {};
+        r.sendBody(json) catch {};
+        return;
+    }
+
+    if (std.mem.eql(u8, path, "/api/conversation/related") and std.mem.eql(u8, method, "POST")) {
+        const app2 = global_app;
+        const body = r.body orelse return error.NoBody;
+        const RelatedRequest = struct {
+            current_context: []const u8,
+            limit: ?u32 = null,
+            session_id: ?[]const u8 = null,
+            user_id: ?[]const u8 = null,
+        };
+        const parsed = utils.parseJson(RelatedRequest, app2.allocator, body) catch |err| {
+            std.log.err("Error parsing related: {s}", .{@errorName(err)});
+            r.setStatus(.bad_request);
+            r.sendBody("Bad Request") catch {};
+            return;
+        };
+        defer parsed.deinit();
+        var embedding_service = embedding.EmbeddingService.init(app2.allocator, app2.config.embedding);
+        defer embedding_service.deinit();
+        const vector = embedding_service.textToVector(parsed.value.current_context) catch {
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+        const search_query = reranker.SearchQuery{
+            .vector = vector,
+            .limit = parsed.value.limit,
+            .time_range = null,
+            .topic_id = null,
+            .source_node_id = null,
+            .user_id = parsed.value.user_id,
+            .context_types = null,
+            .session_id = parsed.value.session_id,
+            .tags = null,
+        };
+        const results = app2.search(search_query) catch {
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+        defer {
+            for (results) |*result| result.deinit(app2.allocator);
+            app2.allocator.free(results);
+        }
+        const json = utils.stringifyJson(app2.allocator, results) catch {
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+        defer app2.allocator.free(json);
+        r.setStatus(.ok);
+        r.setHeader("content-type", "application/json") catch {};
+        r.sendBody(json) catch {};
+        return;
+    }
+
     if (std.mem.eql(u8, path, "/api/search") and std.mem.eql(u8, method, "POST")) {
         const body = r.body orelse return error.NoBody;
 
@@ -366,6 +574,124 @@ fn handleRequest(r: zap.Request) !void {
         r.sendBody(response_json) catch |err| {
             std.log.err("Error sending response: {s}", .{@errorName(err)});
         };
+        return;
+    }
+
+    if (std.mem.eql(u8, path, "/api/conversation/save") and std.mem.eql(u8, method, "POST")) {
+        const body = r.body orelse return error.NoBody;
+
+        const TurnJson = struct {
+            id: []const u8,
+            session_id: []const u8,
+            turn_number: ?u32 = null,
+            timestamp: i64,
+            role: ?[]const u8 = null,
+            user_message: ?[]const u8 = null,
+            assistant_message: ?[]const u8 = null,
+            importance_score: ?f32 = null,
+            tags: ?[][]const u8 = null,
+            user_id: ?[]const u8 = null,
+            metadata: ?std.json.Value = null,
+        };
+
+        const parsed = utils.parseJson(TurnJson, app.allocator, body) catch |err| {
+            std.log.err("Error parsing conversation turn: {s}", .{@errorName(err)});
+            r.setStatus(.bad_request);
+            r.sendBody("Bad Request") catch {};
+            return;
+        };
+        defer parsed.deinit();
+
+        // Build content for embedding (concat user/assistant messages)
+        var content_builder = std.ArrayList(u8).init(app.allocator);
+        defer content_builder.deinit();
+        if (parsed.value.user_message) |um| {
+            content_builder.appendSlice(um) catch {};
+            content_builder.appendSlice("\n") catch {};
+        }
+        if (parsed.value.assistant_message) |am| {
+            content_builder.appendSlice(am) catch {};
+        }
+        const content = content_builder.toOwnedSlice() catch |err| {
+            std.log.err("Alloc content failed: {s}", .{@errorName(err)});
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+        defer app.allocator.free(content);
+
+        var embedding_service = embedding.EmbeddingService.init(app.allocator, app.config.embedding);
+        defer embedding_service.deinit();
+        const vector = embedding_service.textToVector(content) catch |err| {
+            std.log.err("Embedding failed: {s}", .{@errorName(err)});
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+
+        const document = reranker.Document{
+            .id = parsed.value.id,
+            .vector = vector,
+            .timestamp = parsed.value.timestamp,
+            .content = content,
+            .topic_id = null,
+            .related_documents = null,
+            .user_id = parsed.value.user_id,
+            .context_type = .observation,
+            .metadata = null,
+            .session_id = parsed.value.session_id,
+            .turn_number = parsed.value.turn_number,
+            .role = parsed.value.role,
+            .importance_score = parsed.value.importance_score,
+            .tags = parsed.value.tags,
+        };
+        // ownership of vector/content is moved into ingest
+
+        // Optional lightweight extraction if enabled: adjust importance and persist artifacts
+        if (app.config.conversation_memory.auto_extract_context) {
+            const ex = extract.extractFromText(app.allocator, content) catch null;
+            if (ex) |res| {
+                if (document.importance_score == null or res.importance_score > document.importance_score.?) {
+                    // SAFETY: mutate local variable before ingest
+                    @constCast(&document).importance_score = res.importance_score;
+                }
+                // Persist extractions and tag edges
+                // Note: we first persist the turn (ingest) to ensure turn exists, then persist extractions
+                res.deinit(app.allocator);
+            }
+        }
+
+        app.ingest(document) catch |err| {
+            std.log.err("Error saving conversation turn: {s}", .{@errorName(err)});
+            r.setStatus(.internal_server_error);
+            r.sendBody("Internal Server Error") catch {};
+            return;
+        };
+
+        // After ingest, run extraction again to persist artifacts (cheap re-run)
+        if (app.config.conversation_memory.auto_extract_context) {
+            const ex2 = extract.extractFromText(app.allocator, content) catch null;
+            if (ex2) |res2| {
+                // Persist items as context_extractions
+                for (res2.items) |item| {
+                    app.arango_client.persistExtraction(parsed.value.id, item.kind, item.value) catch |e| {
+                        std.log.warn("persistExtraction failed: {s}", .{@errorName(e)});
+                    };
+                }
+                res2.deinit(app.allocator);
+            }
+        }
+
+        const resp = std.fmt.allocPrint(app.allocator, "{{\"turn_id\":\"{s}\"}}", .{parsed.value.id}) catch {
+            r.setStatus(.ok);
+            r.setHeader("content-type", "application/json") catch {};
+            r.sendBody("{\"status\":\"ok\"}") catch {};
+            return;
+        };
+        defer app.allocator.free(resp);
+        r.setStatus(.ok);
+        r.setHeader("content-type", "application/json") catch {};
+        r.sendBody(resp) catch {};
         return;
     }
 
@@ -537,6 +863,10 @@ pub fn main() !void {
 }
 
 test "ingest and retrieve user context" {
+    // Skip integration test unless explicitly enabled
+    const want = std.process.hasEnvVar(std.heap.page_allocator, "RUN_INTEGRATION_TESTS") catch false;
+    if (!want) return;
+
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
@@ -545,7 +875,7 @@ test "ingest and retrieve user context" {
     defer app.deinit();
 
     const doc_id = "test_doc_user_context";
-    const vector = try allocator.alloc(f32, 768);
+    const vector = try allocator.alloc(f32, 8);
     defer allocator.free(vector);
     @memset(vector, 0.1);
 
@@ -560,7 +890,7 @@ test "ingest and retrieve user context" {
 
     try app.ingest(document);
 
-    const query_vector = try allocator.alloc(f32, 768);
+    const query_vector = try allocator.alloc(f32, 8);
     defer allocator.free(query_vector);
     @memset(query_vector, 0.1);
 

@@ -22,5 +22,27 @@
     "retention_period": 365,
     "indexing_interval": 3600,
     "max_context_size": 1048576
+  },
+  "conversation_memory": {
+    "auto_extract_context": true,
+    "context_extraction_threshold": 0.7,
+    "session_timeout_hours": 24,
+    "max_turns_per_session": 1000
+  },
+  "embedding": {
+    "method": "simple_keyword",
+    "api_key": null,
+    "api_url": null,
+    "model_name": null,
+    "vector_size": 8
+  },
+  "llm": {
+    "enabled": false,
+    "provider": "openai",
+    "api_url": "https://api.openai.com/v1/chat/completions",
+    "api_key": null,
+    "model": "gpt-4o-mini",
+    "temperature": 0.7,
+    "max_tokens": 256
   }
 }
